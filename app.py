@@ -9,12 +9,18 @@ from datetime import datetime
 
 # 頁面設定
 st.set_page_config(page_title="今彩539預測系統", layout="wide")
-st.title("🎯 今彩539預測系統（自動更新+統計+預測）")
+st.title("🎯 今彩539預測系統（自動補缺資料+統計+預測）")
 
 # 本地 CSV 檔案
 local_csv = "539_data.csv"
 
-# 每次開啟就自動抓資料（自動更新）
+# 讀取現有 CSV
+try:
+    local_df = pd.read_csv(local_csv, encoding='utf-8')
+except FileNotFoundError:
+    local_df = pd.DataFrame(columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
+
+# 取得最新資料（補缺）
 url = 'https://www.pilio.idv.tw/lto539/list.asp'
 try:
     resp = requests.get(url, timeout=10)
@@ -44,15 +50,28 @@ try:
                 except:
                     pass
 
-    if latest_rows:
-        local_df = pd.DataFrame(latest_rows, columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
+    if not latest_rows:
+        st.error("⚠️ 找不到正確的開獎資料列，請稍後再試。")
+        st.stop()
+
+    # 將最新資料轉為 DataFrame
+    latest_df = pd.DataFrame(latest_rows, columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
+
+    # 比對：只補上缺少的日期
+    if not local_df.empty:
+        existing_dates = set(local_df['Date'].astype(str))
+        new_rows = latest_df[~latest_df['Date'].astype(str).isin(existing_dates)]
+    else:
+        new_rows = latest_df
+
+    if not new_rows.empty:
+        local_df = pd.concat([new_rows, local_df], ignore_index=True)
         local_df.drop_duplicates(subset=['Date'], inplace=True)
         local_df.sort_values(by='Date', ascending=False, inplace=True)
         local_df.to_csv(local_csv, index=False, encoding='utf-8')
-        st.success(f"✅ 已成功更新資料，共 {len(local_df)} 期")
+        st.success(f"✅ 資料庫已補上 {len(new_rows)} 筆新資料，共 {len(local_df)} 期")
     else:
-        st.error("⚠️ 找不到正確的開獎資料列，請稍後再試。")
-        st.stop()
+        st.info("📅 資料庫已是最新，無需更新。")
 
 except Exception as e:
     st.error(f"⚠️ 抓取資料失敗：{e}")
