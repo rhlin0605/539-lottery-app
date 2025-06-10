@@ -13,12 +13,8 @@ st.title("🎯 今彩539預測系統（自動更新+統計+預測）")
 
 # 本地 CSV 檔案
 local_csv = "539_data.csv"
-try:
-    local_df = pd.read_csv(local_csv, encoding='utf-8')
-except FileNotFoundError:
-    local_df = pd.DataFrame(columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
 
-# 取得最新資料
+# 每次開啟就自動抓資料（自動更新）
 url = 'https://www.pilio.idv.tw/lto539/list.asp'
 try:
     resp = requests.get(url, timeout=10)
@@ -27,7 +23,7 @@ try:
 
     tables = soup.find_all('table')
     latest_rows = []
-    num_fetch = st.sidebar.number_input("抓取最新N期（網站資料）", 1, 100, 10)
+    num_fetch = st.sidebar.number_input("抓取最新N期（網站資料）", 1, 100, 50)
 
     for table in tables:
         rows = table.find_all('tr')
@@ -48,28 +44,15 @@ try:
                 except:
                     pass
 
-    if not latest_rows:
-        st.error("⚠️ 找不到正確的開獎資料列，請稍後再試。")
-        st.stop()
-
-    new_data_count = 0
-    for row in latest_rows:
-        date = row[0]
-        if not local_df.empty and date in local_df['Date'].astype(str).values:
-            continue
-        new_row = pd.DataFrame([row], columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
-        local_df = pd.concat([new_row, local_df], ignore_index=True)
-        new_data_count += 1
-
-    if new_data_count > 0:
+    if latest_rows:
+        local_df = pd.DataFrame(latest_rows, columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
         local_df.drop_duplicates(subset=['Date'], inplace=True)
         local_df.sort_values(by='Date', ascending=False, inplace=True)
         local_df.to_csv(local_csv, index=False, encoding='utf-8')
-        backup_file = f"539_data_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        local_df.to_csv(backup_file, index=False, encoding='utf-8')
-        st.success(f"✅ 已新增 {new_data_count} 筆最新資料，並備份：{backup_file}")
+        st.success(f"✅ 已成功更新資料，共 {len(local_df)} 期")
     else:
-        st.info("📅 資料庫已是最新，無需更新。")
+        st.error("⚠️ 找不到正確的開獎資料列，請稍後再試。")
+        st.stop()
 
 except Exception as e:
     st.error(f"⚠️ 抓取資料失敗：{e}")
@@ -92,6 +75,7 @@ weight_pair = st.sidebar.slider("雙號同開", 1, 10, 1)
 weight_headtail = st.sidebar.slider("同首數/尾數", 1, 10, 1)
 weight_miss = st.sidebar.slider("連續未開期數", 1, 10, 1)
 weight_multiplier = st.sidebar.slider("🎚️ 全域權重倍數", 0.5, 2.0, 1.0, step=0.1)
+st.sidebar.caption("💡 1.0 = 標準統計影響；>1.0 = 強化統計權重；<1.0 = 增加隨機性")
 
 # 統計計算
 sum_counter = Counter()
