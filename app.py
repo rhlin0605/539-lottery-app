@@ -9,7 +9,7 @@ from datetime import datetime
 
 # 頁面設定
 st.set_page_config(page_title="今彩539預測系統", layout="wide")
-st.title("🎯 今彩539預測系統（多資料源+Debug Mode+日期統一+20組模擬）")
+st.title("🎯 今彩539預測系統（多資料源+Debug Mode+日期統一+20組模擬+權重記憶）")
 
 local_csv = "539_data.csv"
 
@@ -38,7 +38,31 @@ except FileNotFoundError:
 debug_mode = st.sidebar.checkbox("🔧 Debug Mode", value=False)
 num_fetch = st.sidebar.number_input("抓取最新N期（網站資料）", 1, 100, 50)
 
-# 抓資料
+# 權重設定（支援記憶）
+st.sidebar.header("⚙️ 權重設定（支援記憶）")
+for key, label, default in [
+    ('weight_sum', "和值分佈", 3),
+    ('weight_streak', "連莊號碼", 3),
+    ('weight_hot', "熱門號碼", 2),
+    ('weight_pair', "雙號同開", 1),
+    ('weight_head', "同首數", 1),
+    ('weight_tail', "同尾數", 1),
+    ('weight_miss', "連續未開期數", 1)
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+    st.session_state[key] = st.sidebar.slider(label, 1, 10, st.session_state[key])
+
+weight_sum = st.session_state.weight_sum
+weight_streak = st.session_state.weight_streak
+weight_hot = st.session_state.weight_hot
+weight_pair = st.session_state.weight_pair
+weight_head = st.session_state.weight_head
+weight_tail = st.session_state.weight_tail
+weight_miss = st.session_state.weight_miss
+weight_multiplier = st.sidebar.slider("🎚️ 全域權重倍數", 0.5, 2.0, 1.0, step=0.1)
+
+# 資料抓取函數
 def fetch_from_primary_source(num_fetch=50, debug=False):
     url = 'https://www.pilio.idv.tw/lto539/list.asp'
     latest_rows = []
@@ -99,7 +123,7 @@ def fetch_from_secondary_source(debug=False):
         st.warning(f"⚠️ 備用資料源抓取失敗：{e}")
         return []
 
-# Debug Mode按鈕
+# Debug Mode
 if st.sidebar.button("🛠️ 立即抓取資料（Debug）"):
     st.subheader("🔎 Debug Mode：立即抓取資料")
     pilio_data = fetch_from_primary_source(num_fetch, debug=True)
@@ -118,7 +142,6 @@ if latest_rows:
     latest_df = pd.DataFrame(latest_rows, columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
     latest_df['Date'] = latest_df['Date'].apply(standardize_date)
     local_df['Date'] = local_df['Date'].apply(standardize_date)
-
     existing_dates = set(local_df['Date'])
     new_rows = latest_df[~latest_df['Date'].isin(existing_dates)]
 
@@ -138,24 +161,12 @@ if latest_rows:
 else:
     st.error("❌ 無法從任一資料源取得資料，請稍後再試。")
 
-# 顯示最新資料
-st.subheader("📅 最新資料（前 5 筆）")
+st.subheader("📅 最新資料（前5筆）")
 st.dataframe(local_df.head(5))
 
 # 統計分析
 num_periods = st.selectbox("選擇統計期數（分析區間）", [15, 50, 100, 200], index=1)
 df_sorted = local_df.head(num_periods)
-
-# Sidebar 權重設定
-st.sidebar.header("⚙️ 權重設定")
-weight_sum = st.sidebar.slider("和值分佈", 1, 10, 3)
-weight_streak = st.sidebar.slider("連莊號碼", 1, 10, 3)
-weight_hot = st.sidebar.slider("熱門號碼", 1, 10, 2)
-weight_pair = st.sidebar.slider("雙號同開", 1, 10, 1)
-weight_head = st.sidebar.slider("同首數", 1, 10, 1)
-weight_tail = st.sidebar.slider("同尾數", 1, 10, 1)
-weight_miss = st.sidebar.slider("連續未開期數", 1, 10, 1)
-weight_multiplier = st.sidebar.slider("🎚️ 全域權重倍數", 0.5, 2.0, 1.0, step=0.1)
 
 # 統計計算
 sum_counter = Counter()
@@ -255,7 +266,6 @@ if st.button("🎯 立即產生預測號碼"):
         prediction = sorted(random.sample(weighted_numbers, 5))
         return prediction
 
-    # 模擬20組
     simulated_draws = [generate_prediction() for _ in range(20)]
     st.write("🔄 模擬 20 組選號：")
     for i, draw in enumerate(simulated_draws, 1):
@@ -264,13 +274,15 @@ if st.button("🎯 立即產生預測號碼"):
     # 統計熱門號碼
     all_numbers = [num for draw in simulated_draws for num in draw]
     number_counts = Counter(all_numbers)
-    top_numbers = [num for num, count in number_counts.most_common(10)]
-    st.write("🔥 20組中最常出現的號碼（前10個）：", top_numbers)
+    top_numbers_counts = number_counts.most_common(15)
+    st.write("🔥 20組模擬選號的熱門號碼（前15個+次數）：")
+    st.dataframe(pd.DataFrame(top_numbers_counts, columns=['號碼', '次數']))
 
     # 建議3組
     st.subheader("🎯 建議選號（綜合分析）")
-    recommendations = []
+    top_numbers = [num for num, _ in top_numbers_counts]
     available_numbers = set(top_numbers)
+    recommendations = []
     for _ in range(3):
         if len(available_numbers) < 5:
             remaining_pool = set(range(1, 40)) - available_numbers
