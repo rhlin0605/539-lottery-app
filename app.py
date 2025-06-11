@@ -11,7 +11,6 @@ from datetime import datetime
 st.set_page_config(page_title="今彩539預測系統", layout="wide")
 st.title("🎯 今彩539預測系統（自動補缺資料+統計+預測）")
 
-# 本地 CSV 檔案
 local_csv = "539_data.csv"
 
 # 讀取現有 CSV
@@ -20,56 +19,86 @@ try:
 except FileNotFoundError:
     local_df = pd.DataFrame(columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
 
-# 取得最新資料（補缺）
-url = 'https://www.pilio.idv.tw/lto539/list.asp'
-try:
-    resp = requests.get(url, timeout=10)
-    resp.encoding = 'utf-8'
-    soup = BeautifulSoup(resp.text, 'html.parser')
+# 取得最新資料（多資料源）
+def fetch_from_primary_source(num_fetch=50):
+    url = 'https://www.pilio.idv.tw/lto539/list.asp'
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.encoding = 'utf-8'
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        tables = soup.find_all('table')
+        latest_rows = []
+        for table in tables:
+            rows = table.find_all('tr')
+            has_header = False
+            if rows and len(rows[0].find_all('td')) >= 2:
+                first_row_text = [c.get_text(strip=True) for c in rows[0].find_all('td')]
+                if any('日期' in text or '今彩' in text for text in first_row_text):
+                    has_header = True
+            start_idx = 1 if has_header else 0
+            for row in rows[start_idx:start_idx+num_fetch]:
+                cols = row.find_all('td')
+                if len(cols) >= 2 and '/' in cols[0].get_text():
+                    try:
+                        date = cols[0].get_text(strip=True).split('(')[0]
+                        numbers_text = cols[1].get_text(strip=True).replace('\xa0', '')
+                        numbers = [int(x) for x in numbers_text.split(',')]
+                        latest_rows.append([date] + numbers)
+                    except:
+                        pass
+        return latest_rows
+    except Exception as e:
+        st.warning(f"⚠️ 主資料源抓取失敗：{e}")
+        return []
 
-    tables = soup.find_all('table')
-    latest_rows = []
-    num_fetch = st.sidebar.number_input("抓取最新N期（網站資料）", 1, 100, 50)
-
-    for table in tables:
-        rows = table.find_all('tr')
-        has_header = False
-        if rows and len(rows[0].find_all('td')) >= 2:
-            first_row_text = [c.get_text(strip=True) for c in rows[0].find_all('td')]
-            if any('日期' in text or '今彩' in text for text in first_row_text):
-                has_header = True
-        start_idx = 1 if has_header else 0
-        for row in rows[start_idx:start_idx+num_fetch]:
+def fetch_from_secondary_source():
+    url = 'https://lotto.ctbcbank.com/result_all.htm#07'
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.encoding = 'utf-8'
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        latest_rows = []
+        rows = soup.find_all('tr')
+        for row in rows:
             cols = row.find_all('td')
-            if len(cols) >= 2 and '/' in cols[0].get_text():
+            if len(cols) >= 5:
                 try:
-                    date = cols[0].get_text(strip=True).split('(')[0]
-                    numbers_text = cols[1].get_text(strip=True).replace('\xa0', '')
-                    numbers = [int(x) for x in numbers_text.split(',')]
-                    latest_rows.append([date] + numbers)
+                    date_text = cols[0].get_text(strip=True)
+                    if '/' in date_text:
+                        date = date_text.split(' ')[0]
+                        numbers_text = cols[4].get_text(strip=True).replace('\xa0', '')
+                        numbers = [int(x) for x in numbers_text.split()]
+                        latest_rows.append([date] + numbers)
                 except:
                     pass
+        return latest_rows
+    except Exception as e:
+        st.warning(f"⚠️ 備用資料源抓取失敗：{e}")
+        return []
 
-    if not latest_rows:
-        st.warning("⚠️ 找不到正確的開獎資料列，請稍後再試。")
+num_fetch = st.sidebar.number_input("抓取最新N期（網站資料）", 1, 100, 50)
+latest_rows = fetch_from_primary_source(num_fetch)
+if not latest_rows:
+    st.warning("🔄 嘗試使用備用資料源...")
+    latest_rows = fetch_from_secondary_source()
+
+if latest_rows:
+    latest_df = pd.DataFrame(latest_rows, columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
+    if not local_df.empty:
+        existing_dates = set(local_df['Date'].astype(str))
+        new_rows = latest_df[~latest_df['Date'].astype(str).isin(existing_dates)]
     else:
-        latest_df = pd.DataFrame(latest_rows, columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
-        if not local_df.empty:
-            existing_dates = set(local_df['Date'].astype(str))
-            new_rows = latest_df[~latest_df['Date'].astype(str).isin(existing_dates)]
-        else:
-            new_rows = latest_df
-
-        if not new_rows.empty:
-            local_df = pd.concat([new_rows, local_df], ignore_index=True)
-            local_df.drop_duplicates(subset=['Date'], inplace=True)
-            local_df.sort_values(by='Date', ascending=False, inplace=True)
-            local_df.to_csv(local_csv, index=False, encoding='utf-8')
-            st.success(f"✅ 資料庫已補上 {len(new_rows)} 筆新資料，共 {len(local_df)} 期")
-        else:
-            st.info("📅 資料庫已是最新，無需更新。")
-except Exception as e:
-    st.error(f"⚠️ 抓取資料失敗：{e}")
+        new_rows = latest_df
+    if not new_rows.empty:
+        local_df = pd.concat([new_rows, local_df], ignore_index=True)
+        local_df.drop_duplicates(subset=['Date'], inplace=True)
+        local_df.sort_values(by='Date', ascending=False, inplace=True)
+        local_df.to_csv(local_csv, index=False, encoding='utf-8')
+        st.success(f"✅ 資料庫已補上 {len(new_rows)} 筆新資料，共 {len(local_df)} 期")
+    else:
+        st.info("📅 資料庫已是最新，無需更新。")
+else:
+    st.error("❌ 無法從任一資料源取得資料，請稍後再試。")
 
 # 顯示最新資料
 st.subheader("📅 最新資料（前 5 筆）")
@@ -107,18 +136,14 @@ for _, row in df_sorted.iterrows():
     total_sum = sum(nums)
     sum_counter[total_sum] += 1
     sum_to_draws.setdefault(total_sum, []).append(nums)
-
     curr_nums = set(nums)
     for num in prev_nums & curr_nums:
         streak_counter[num] += 1
     prev_nums = curr_nums
-
     for num in nums:
         num_counter[num] += 1
-
     for pair in combinations(sorted(nums), 2):
         pair_counter[pair] += 1
-
     heads = [num // 10 for num in nums]
     tails = [num % 10 for num in nums]
     for head in set(heads):
@@ -127,7 +152,6 @@ for _, row in df_sorted.iterrows():
     for tail in set(tails):
         if tails.count(tail) >= 2:
             tail_counter[tail] += 1
-
     for num in miss_counter.keys():
         if num in curr_nums:
             miss_counter[num] = 0
@@ -142,7 +166,7 @@ head_sorted = sorted(head_counter.items(), key=lambda x: x[1], reverse=True)[:25
 tail_sorted = sorted(tail_counter.items(), key=lambda x: x[1], reverse=True)[:25]
 sorted_miss = sorted(miss_counter.items(), key=lambda x: x[1], reverse=True)[:25]
 
-# 顯示統計
+# 統計分析顯示
 st.subheader("📊 統計分析（前25筆）")
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -165,7 +189,7 @@ with col3:
     st.markdown("### 📉 連續未開期數統計")
     st.dataframe(pd.DataFrame(sorted_miss, columns=["號碼", "連續未開期數"]), use_container_width=True, height=300)
 
-# 預測選號按鈕
+# 預測選號
 st.subheader("🔮 自動預測組合（進階權重）")
 if st.button("🎯 立即產生預測號碼"):
     def generate_prediction():
@@ -194,24 +218,20 @@ if st.button("🎯 立即產生預測號碼"):
         prediction = sorted(random.sample(weighted_numbers, 5))
         return prediction, sum(prediction)
 
-    # 單次產生
     prediction, prediction_sum = generate_prediction()
     st.write(f"🎯 建議選號：{prediction}（和值：{prediction_sum}）")
 
-    # 模擬10次
     simulated_draws = [generate_prediction()[0] for _ in range(10)]
     st.write("🧪 模擬10次選號：")
     for i, draw in enumerate(simulated_draws, 1):
         st.write(f"第{i}組：{draw}")
 
-    # 統計號碼出現次數
     all_numbers = [num for draw in simulated_draws for num in draw]
     number_counts = Counter(all_numbers)
     top_numbers = number_counts.most_common(5)
     st.write("🔥 在10次模擬中最常出現的5個號碼：")
     st.write([num for num, count in top_numbers])
 
-    # 統計前3組組合（pair）
     pair_counts = Counter()
     for draw in simulated_draws:
         for pair in combinations(draw, 2):
