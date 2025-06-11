@@ -262,7 +262,7 @@ if st.button("🎯 立即產生預測號碼"):
         weighted_numbers = [num for num in set(weighted_numbers) if 1 <= num <= 39]
         remaining_numbers = list(set(range(1, 40)) - set(weighted_numbers))
         while len(weighted_numbers) < 5 and remaining_numbers:
-            weighted_numbers.append(random.choice(remaining_numbers))
+            weighted_numbers.append(random.choice(list(remaining_numbers)))
         prediction = sorted(random.sample(weighted_numbers, 5))
         return prediction
 
@@ -291,7 +291,7 @@ if st.button("🎯 立即產生預測號碼"):
                 recommendation.append(random.choice(list(remaining_pool)))
             recommendations.append(sorted(random.sample(recommendation, 5)))
         else:
-            recommendations.append(sorted(random.sample(available_numbers, 5)))
+            recommendations.append(sorted(random.sample(list(available_numbers), 5)))
     for i, rec in enumerate(recommendations, 1):
         st.write(f"建議第{i}組：{rec}（和值：{sum(rec)})")
 
