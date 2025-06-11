@@ -9,7 +9,7 @@ from datetime import datetime
 
 # 頁面設定
 st.set_page_config(page_title="今彩539預測系統", layout="wide")
-st.title("🎯 今彩539預測系統（多資料源+Debug Mode+日期統一+20組模擬+權重記憶）")
+st.title("🎯 今彩539預測系統（權重記憶+自動更新）")
 
 local_csv = "539_data.csv"
 
@@ -34,11 +34,7 @@ try:
 except FileNotFoundError:
     local_df = pd.DataFrame(columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
 
-# Sidebar 設定
-debug_mode = st.sidebar.checkbox("🔧 Debug Mode", value=False)
-num_fetch = st.sidebar.number_input("抓取最新N期（網站資料）", 1, 100, 50)
-
-# 權重設定（支援記憶）
+# Sidebar 權重設定（支援記憶）
 st.sidebar.header("⚙️ 權重設定（支援記憶）")
 for key, label, default in [
     ('weight_sum', "和值分佈", 3),
@@ -63,7 +59,7 @@ weight_miss = st.session_state.weight_miss
 weight_multiplier = st.sidebar.slider("🎚️ 全域權重倍數", 0.5, 2.0, 1.0, step=0.1)
 
 # 資料抓取函數
-def fetch_from_primary_source(num_fetch=50, debug=False):
+def fetch_from_primary_source(num_fetch=50):
     url = 'https://www.pilio.idv.tw/lto539/list.asp'
     latest_rows = []
     try:
@@ -88,68 +84,21 @@ def fetch_from_primary_source(num_fetch=50, debug=False):
                         numbers_text = cols[1].get_text(strip=True).replace('\xa0', '')
                         numbers = [int(x) for x in numbers_text.split(',')]
                         latest_rows.append([date] + numbers)
-                    except Exception as e:
-                        if debug:
-                            st.warning(f"⚠️ Pilio解析錯誤: {e}")
+                    except Exception:
+                        pass
         return latest_rows
-    except Exception as e:
-        st.warning(f"⚠️ 主資料源抓取失敗：{e}")
+    except Exception:
         return []
-
-def fetch_from_secondary_source(debug=False):
-    url = 'https://lotto.ctbcbank.com/result_all.htm#07'
-    latest_rows = []
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.encoding = 'utf-8'
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        rows = soup.find_all('tr')
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) >= 5:
-                try:
-                    date_text = cols[0].get_text(strip=True)
-                    if '/' in date_text:
-                        date = date_text.split(' ')[0]
-                        date = standardize_date(date)
-                        numbers_text = cols[4].get_text(strip=True).replace('\xa0', '')
-                        numbers = [int(x) for x in numbers_text.split()]
-                        latest_rows.append([date] + numbers)
-                except Exception as e:
-                    if debug:
-                        st.warning(f"⚠️ CTBC解析錯誤: {e}")
-        return latest_rows
-    except Exception as e:
-        st.warning(f"⚠️ 備用資料源抓取失敗：{e}")
-        return []
-
-# Debug Mode
-if st.sidebar.button("🛠️ 立即抓取資料（Debug）"):
-    st.subheader("🔎 Debug Mode：立即抓取資料")
-    pilio_data = fetch_from_primary_source(num_fetch, debug=True)
-    ctbcbank_data = fetch_from_secondary_source(debug=True)
-    st.write("✅ Primary Source（Pilio）資料（前5筆）:", pilio_data[:5])
-    st.write("✅ Secondary Source（CTBC）資料（前5筆）:", ctbcbank_data[:5])
 
 # 自動抓資料
-latest_rows = fetch_from_primary_source(num_fetch, debug=debug_mode)
-if not latest_rows:
-    if debug_mode:
-        st.info("🔄 Primary Source 抓取失敗或無資料，嘗試使用備用資料源...")
-    latest_rows = fetch_from_secondary_source(debug=debug_mode)
-
+num_fetch = 50
+latest_rows = fetch_from_primary_source(num_fetch)
 if latest_rows:
     latest_df = pd.DataFrame(latest_rows, columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
     latest_df['Date'] = latest_df['Date'].apply(standardize_date)
     local_df['Date'] = local_df['Date'].apply(standardize_date)
     existing_dates = set(local_df['Date'])
     new_rows = latest_df[~latest_df['Date'].isin(existing_dates)]
-
-    if debug_mode:
-        st.write("📅 資料庫已有日期：", sorted(existing_dates))
-        st.write("📅 Pilio抓到最新日期：", latest_df.iloc[0]['Date'])
-        st.write("✅ 新資料筆數：", len(new_rows))
-
     if not new_rows.empty:
         local_df = pd.concat([new_rows, local_df], ignore_index=True)
         local_df.drop_duplicates(subset=['Date'], inplace=True)
@@ -159,8 +108,9 @@ if latest_rows:
     else:
         st.info("📅 資料庫已是最新，無需更新。")
 else:
-    st.error("❌ 無法從任一資料源取得資料，請稍後再試。")
+    st.error("❌ 無法取得資料，請稍後再試。")
 
+# 最新資料
 st.subheader("📅 最新資料（前5筆）")
 st.dataframe(local_df.head(5))
 
@@ -271,14 +221,12 @@ if st.button("🎯 立即產生預測號碼"):
     for i, draw in enumerate(simulated_draws, 1):
         st.write(f"第{i}組：{draw}")
 
-    # 統計熱門號碼
     all_numbers = [num for draw in simulated_draws for num in draw]
     number_counts = Counter(all_numbers)
     top_numbers_counts = number_counts.most_common(15)
     st.write("🔥 20組模擬選號的熱門號碼（前15個+次數）：")
     st.dataframe(pd.DataFrame(top_numbers_counts, columns=['號碼', '次數']))
 
-    # 建議3組
     st.subheader("🎯 建議選號（綜合分析）")
     top_numbers = [num for num, _ in top_numbers_counts]
     available_numbers = set(top_numbers)
