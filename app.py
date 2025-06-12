@@ -2,125 +2,87 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
 from collections import Counter
 from itertools import combinations
 import random
-from datetime import datetime
+import os
 
-# 頁面設定
 st.set_page_config(page_title="今彩539預測系統", layout="wide")
-st.title("🎯 今彩539預測系統（自動補缺資料+統計+預測）")
+st.title("🎯 今彩539預測系統（自動更新+統計+預測）")
 
-local_csv = "539_data.csv"
+CSV_FILE = "539_data.csv"
+BACKUP_FOLDER = "backups"
+os.makedirs(BACKUP_FOLDER, exist_ok=True)
 
-# 讀取現有 CSV
-try:
-    local_df = pd.read_csv(local_csv, encoding='utf-8')
-except FileNotFoundError:
-    local_df = pd.DataFrame(columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
+def standardize_date(date_str):
+    try:
+        dt = datetime.strptime(date_str.strip(), "%Y/%m/%d")
+    except ValueError:
+        dt = datetime.strptime(date_str.strip(), "%Y/%m/%-d")
+    return dt.strftime("%Y/%m/%d")
 
-# 取得最新資料（多資料源）
-def fetch_from_primary_source(num_fetch=50):
+def fetch_pilio_data(n=20):
     url = 'https://www.pilio.idv.tw/lto539/list.asp'
     try:
         resp = requests.get(url, timeout=10)
         resp.encoding = 'utf-8'
         soup = BeautifulSoup(resp.text, 'html.parser')
         tables = soup.find_all('table')
-        latest_rows = []
+        rows = []
         for table in tables:
-            rows = table.find_all('tr')
-            has_header = False
-            if rows and len(rows[0].find_all('td')) >= 2:
-                first_row_text = [c.get_text(strip=True) for c in rows[0].find_all('td')]
-                if any('日期' in text or '今彩' in text for text in first_row_text):
-                    has_header = True
-            start_idx = 1 if has_header else 0
-            for row in rows[start_idx:start_idx+num_fetch]:
-                cols = row.find_all('td')
-                if len(cols) >= 2 and '/' in cols[0].get_text():
+            trs = table.find_all('tr')
+            for tr in trs:
+                tds = tr.find_all('td')
+                if len(tds) >= 2 and '/' in tds[0].get_text():
                     try:
-                        date = cols[0].get_text(strip=True).split('(')[0]
-                        numbers_text = cols[1].get_text(strip=True).replace('\xa0', '')
-                        numbers = [int(x) for x in numbers_text.split(',')]
-                        latest_rows.append([date] + numbers)
+                        date = standardize_date(tds[0].get_text().split('(')[0].strip())
+                        numbers = [int(x) for x in tds[1].get_text().replace('\xa0', '').split(',')]
+                        if len(numbers) == 5:
+                            rows.append([date] + numbers)
                     except:
-                        pass
-        return latest_rows
+                        continue
+        return rows[:n]
     except Exception as e:
-        st.warning(f"⚠️ 主資料源抓取失敗：{e}")
+        st.warning(f"抓取 Pilio 失敗：{e}")
         return []
 
-def fetch_from_secondary_source():
-    url = 'https://lotto.ctbcbank.com/result_all.htm#07'
+def update_data():
     try:
-        resp = requests.get(url, timeout=10)
-        resp.encoding = 'utf-8'
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        latest_rows = []
-        rows = soup.find_all('tr')
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) >= 5:
-                try:
-                    date_text = cols[0].get_text(strip=True)
-                    if '/' in date_text:
-                        date = date_text.split(' ')[0]
-                        numbers_text = cols[4].get_text(strip=True).replace('\xa0', '')
-                        numbers = [int(x) for x in numbers_text.split()]
-                        latest_rows.append([date] + numbers)
-                except:
-                    pass
-        return latest_rows
-    except Exception as e:
-        st.warning(f"⚠️ 備用資料源抓取失敗：{e}")
-        return []
+        local_df = pd.read_csv(CSV_FILE, encoding='utf-8')
+    except:
+        local_df = pd.DataFrame(columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
 
-num_fetch = st.sidebar.number_input("抓取最新N期（網站資料）", 1, 100, 50)
-latest_rows = fetch_from_primary_source(num_fetch)
-if not latest_rows:
-    st.warning("🔄 嘗試使用備用資料源...")
-    latest_rows = fetch_from_secondary_source()
+    latest_local_date = local_df['Date'].iloc[0] if not local_df.empty else "2000/01/01"
+    fetched_data = fetch_pilio_data(30)
 
-if latest_rows:
-    latest_df = pd.DataFrame(latest_rows, columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
-    if not local_df.empty:
-        existing_dates = set(local_df['Date'].astype(str))
-        new_rows = latest_df[~latest_df['Date'].astype(str).isin(existing_dates)]
-    else:
-        new_rows = latest_df
-    if not new_rows.empty:
-        local_df = pd.concat([new_rows, local_df], ignore_index=True)
-        local_df.drop_duplicates(subset=['Date'], inplace=True)
+    new_rows = []
+    for row in fetched_data:
+        if row[0] > latest_local_date:
+            new_rows.append(row)
+
+    if new_rows:
+        df_new = pd.DataFrame(new_rows, columns=local_df.columns)
+        local_df = pd.concat([df_new, local_df], ignore_index=True)
+        local_df.drop_duplicates(subset='Date', inplace=True)
         local_df.sort_values(by='Date', ascending=False, inplace=True)
-        local_df.to_csv(local_csv, index=False, encoding='utf-8')
-        st.success(f"✅ 資料庫已補上 {len(new_rows)} 筆新資料，共 {len(local_df)} 期")
+        local_df.to_csv(CSV_FILE, index=False, encoding='utf-8')
+        backup_name = f"{BACKUP_FOLDER}/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        local_df.to_csv(backup_name, index=False, encoding='utf-8')
+        st.success(f"✅ 已更新 {len(new_rows)} 筆資料，並備份至 {backup_name}")
     else:
-        st.info("📅 資料庫已是最新，無需更新。")
-else:
-    st.error("❌ 無法從任一資料源取得資料，請稍後再試。")
+        st.info("📅 資料已是最新，不需更新。")
+    return local_df
 
-# 顯示最新資料
+local_df = update_data()
 st.subheader("📅 最新資料（前 5 筆）")
 st.dataframe(local_df.head(5))
 
-# 統計分析
-num_periods = st.selectbox("選擇統計期數（分析區間）", [15, 50, 75,100, 150, 200], index=1)
+# 統計分析與預測
+st.subheader("📊 統計分析")
+num_periods = st.selectbox("選擇統計期數", [50, 100, 200], index=1)
 df_sorted = local_df.head(num_periods)
 
-# Sidebar 權重設定
-st.sidebar.header("⚙️ 權重設定")
-weight_sum = st.sidebar.slider("和值分佈", 1, 10, 3)
-weight_streak = st.sidebar.slider("連莊號碼", 1, 10, 4)
-weight_hot = st.sidebar.slider("熱門號碼", 1, 10, 5)
-weight_pair = st.sidebar.slider("雙號同開", 1, 10, 2)
-weight_head = st.sidebar.slider("同首數", 1, 10, 3)
-weight_tail = st.sidebar.slider("同尾數", 1, 10, 3)
-weight_miss = st.sidebar.slider("連續未開期數", 1, 10, 2)
-weight_multiplier = st.sidebar.slider("🎚️ 全域權重倍數", 0.5, 2.0, 1.0, step=0.1)
-st.sidebar.caption("💡 1.0 = 標準統計影響；>1.0 = 強化統計權重；<1.0 = 增加隨機性")
-
-# 統計計算
 sum_counter = Counter()
 sum_to_draws = {}
 streak_counter = Counter()
@@ -136,115 +98,84 @@ for _, row in df_sorted.iterrows():
     total_sum = sum(nums)
     sum_counter[total_sum] += 1
     sum_to_draws.setdefault(total_sum, []).append(nums)
+
     curr_nums = set(nums)
     for num in prev_nums & curr_nums:
         streak_counter[num] += 1
     prev_nums = curr_nums
+
     for num in nums:
         num_counter[num] += 1
+
     for pair in combinations(sorted(nums), 2):
         pair_counter[pair] += 1
+
     heads = [num // 10 for num in nums]
     tails = [num % 10 for num in nums]
-    for head in set(heads):
-        if heads.count(head) >= 2:
-            head_counter[head] += 1
-    for tail in set(tails):
-        if tails.count(tail) >= 2:
-            tail_counter[tail] += 1
-    for num in miss_counter.keys():
+    for h in set(heads):
+        if heads.count(h) >= 2:
+            head_counter[h] += 1
+    for t in set(tails):
+        if tails.count(t) >= 2:
+            tail_counter[t] += 1
+
+    for num in miss_counter:
         if num in curr_nums:
             miss_counter[num] = 0
         else:
             miss_counter[num] += 1
 
-sum_sorted = sorted(sum_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-top_streaks = sorted(streak_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-hot_numbers = sorted(num_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-top_pairs = pair_counter.most_common(25)
-head_sorted = sorted(head_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-tail_sorted = sorted(tail_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-sorted_miss = sorted(miss_counter.items(), key=lambda x: x[1], reverse=True)[:25]
+sum_sorted = sorted(sum_counter.items(), key=lambda x: x[1], reverse=True)[:10]
+top_streaks = sorted(streak_counter.items(), key=lambda x: x[1], reverse=True)
+hot_numbers = sorted(num_counter.items(), key=lambda x: x[1], reverse=True)
+top_pairs = [p for p in pair_counter.items() if p[1] >= 2]
+head_sorted = sorted(head_counter.items(), key=lambda x: x[1], reverse=True)
+tail_sorted = sorted(tail_counter.items(), key=lambda x: x[1], reverse=True)
+sorted_miss = sorted(miss_counter.items(), key=lambda x: x[1], reverse=True)
 
-# 統計分析顯示
-st.subheader("📊 統計分析（前25筆）")
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.markdown("### 🧮 和值分佈")
-    st.dataframe(pd.DataFrame(sum_sorted, columns=["和值", "次數"]), use_container_width=True, height=300)
-    st.markdown("### 🔄 連莊號碼排行")
-    st.dataframe(pd.DataFrame(top_streaks, columns=["號碼", "連莊次數"]), use_container_width=True, height=300)
-with col2:
-    st.markdown("### 🔥 熱門號碼排行")
-    st.dataframe(pd.DataFrame(hot_numbers, columns=["號碼", "次數"]), use_container_width=True, height=300)
-    st.markdown("### 🔗 雙號同開排行")
-    pair_df = pd.DataFrame(top_pairs, columns=["雙號組合", "次數"])
-    pair_df["雙號組合"] = pair_df["雙號組合"].apply(lambda x: f"{x[0]} & {x[1]}")
-    st.dataframe(pair_df, use_container_width=True, height=300)
-with col3:
-    st.markdown("### 🔢 同首數排行（至少2顆）")
-    st.dataframe(pd.DataFrame(head_sorted, columns=["首數", "次數"]), use_container_width=True, height=300)
-    st.markdown("### 🔢 同尾數排行（至少2顆）")
-    st.dataframe(pd.DataFrame(tail_sorted, columns=["尾數", "次數"]), use_container_width=True, height=300)
-    st.markdown("### 📉 連續未開期數統計")
-    st.dataframe(pd.DataFrame(sorted_miss, columns=["號碼", "連續未開期數"]), use_container_width=True, height=300)
+st.write("### 和值分佈（前10）")
+st.dataframe(pd.DataFrame(sum_sorted, columns=["和值", "次數"]))
 
-# 預測選號
-st.subheader("🔮 自動預測組合（進階權重）")
-if st.button("🎯 立即產生預測號碼"):
-    def generate_prediction():
-        weighted_numbers = []
-        for sum_value, _ in sum_sorted:
-            for nums in sum_to_draws.get(sum_value, []):
-                weighted_numbers.extend(nums * int(weight_sum * weight_multiplier))
-        for num, _ in top_streaks:
-            weighted_numbers.extend([num] * int(weight_streak * weight_multiplier))
-        for num, _ in hot_numbers:
-            weighted_numbers.extend([num] * int(weight_hot * weight_multiplier))
-        for pair, _ in top_pairs:
-            weighted_numbers.extend([pair[0]] * int(weight_pair * weight_multiplier))
-            weighted_numbers.extend([pair[1]] * int(weight_pair * weight_multiplier))
-        for head, _ in head_sorted:
-            weighted_numbers.extend([num for num in range(head*10, min(head*10+10, 40))] * int(weight_head * weight_multiplier))
-        for tail, _ in tail_sorted:
-            weighted_numbers.extend([num for num in range(tail, 40, 10)] * int(weight_tail * weight_multiplier))
-        for num, miss_count in sorted_miss:
-            points = min(miss_count, 5) * int(weight_miss * weight_multiplier)
-            weighted_numbers.extend([num] * points)
-        weighted_numbers = [num for num in set(weighted_numbers) if 1 <= num <= 39]
-        remaining_numbers = list(set(range(1, 40)) - set(weighted_numbers))
-        while len(weighted_numbers) < 5 and remaining_numbers:
-            weighted_numbers.append(random.choice(remaining_numbers))
-        prediction = sorted(random.sample(weighted_numbers, 5))
-        return prediction, sum(prediction)
+st.write("### 熱門號碼")
+st.dataframe(pd.DataFrame(hot_numbers[:10], columns=["號碼", "次數"]))
 
-    prediction, prediction_sum = generate_prediction()
-    st.write(f"🎯 建議選號：{prediction}（和值：{prediction_sum}）")
+st.write("### 雙號同開（次數 ≥ 2）")
+pair_df = pd.DataFrame(top_pairs, columns=["組合", "次數"])
+pair_df["組合"] = pair_df["組合"].apply(lambda x: f"{x[0]} & {x[1]}")
+st.dataframe(pair_df)
 
-    simulated_draws = [generate_prediction()[0] for _ in range(10)]
-    st.write("🧪 模擬10次選號：")
-    for i, draw in enumerate(simulated_draws, 1):
-        st.write(f"第{i}組：{draw}")
+st.write("### 同首數（至少2顆）")
+st.dataframe(pd.DataFrame(head_sorted, columns=["首數", "次數"]))
 
-    all_numbers = [num for draw in simulated_draws for num in draw]
-    number_counts = Counter(all_numbers)
-    top_numbers = number_counts.most_common(5)
-    st.write("🔥 在10次模擬中最常出現的5個號碼：")
-    st.write([num for num, count in top_numbers])
+st.write("### 同尾數（至少2顆）")
+st.dataframe(pd.DataFrame(tail_sorted, columns=["尾數", "次數"]))
 
-    pair_counts = Counter()
-    for draw in simulated_draws:
-        for pair in combinations(draw, 2):
-            pair_counts[pair] += 1
-    top_pairs_sim = pair_counts.most_common(3)
-    st.write("🔗 在10次模擬中最常出現的3組號碼配對：")
-    st.write([f"{pair[0]} & {pair[1]} (出現 {count} 次)" for pair, count in top_pairs_sim])
+st.write("### 連續未開期數")
+st.dataframe(pd.DataFrame(sorted_miss[:10], columns=["號碼", "未開期數"]))
 
-# 下載 CSV
-csv_download = local_df.to_csv(index=False).encode('utf-8')
-st.sidebar.download_button(
-    label="📥 下載完整CSV",
-    data=csv_download,
-    file_name=f"539_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-    mime='text/csv'
-)
+# 預測號碼
+st.subheader("🔮 自動預測組合")
+pool = []
+for k, _ in sum_sorted:
+    for nums in sum_to_draws.get(k, []):
+        pool.extend(nums)
+
+for n, _ in top_streaks[:10]:
+    pool.extend([n] * 2)
+for n, _ in hot_numbers[:10]:
+    pool.extend([n] * 2)
+for p, _ in top_pairs:
+    pool.extend(p)
+for h, _ in head_sorted:
+    pool.extend([n for n in range(h*10, min(h*10+10, 40))])
+for t, _ in tail_sorted:
+    pool.extend([n for n in range(t, 40, 10)])
+for n, c in sorted_miss[:10]:
+    pool.extend([n] * (c // 5 + 1))
+
+pool = list(set([n for n in pool if 1 <= n <= 39]))
+if len(pool) >= 5:
+    result = sorted(random.sample(pool, 5))
+    st.write(f"🎯 建議號碼：{result}（和值：{sum(result)}）")
+else:
+    st.warning("資料不足，無法預測號碼。")
