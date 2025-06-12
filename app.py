@@ -38,12 +38,12 @@ except FileNotFoundError:
 st.sidebar.header("⚙️ 權重設定（支援記憶）")
 for key, label, default in [
     ('weight_sum', "和值分佈", 3),
-    ('weight_streak', "連莊號碼", 3),
-    ('weight_hot', "熱門號碼", 2),
-    ('weight_pair', "雙號同開", 1),
-    ('weight_head', "同首數", 1),
-    ('weight_tail', "同尾數", 1),
-    ('weight_miss', "連續未開期數", 1)
+    ('weight_streak', "連莊號碼", 4),
+    ('weight_hot', "熱門號碼", 5),
+    ('weight_pair', "雙號同開", 2),
+    ('weight_head', "同首數", 3),
+    ('weight_tail', "同尾數", 3),
+    ('weight_miss', "連續未開期數", 2)
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
