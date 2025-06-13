@@ -37,13 +37,13 @@ except FileNotFoundError:
 # Sidebar 權重設定（支援記憶）
 st.sidebar.header("⚙️ 權重設定（支援記憶）")
 for key, label, default in [
-    ('weight_sum', "和值分佈", 3),
-    ('weight_streak', "連莊號碼", 4),
+    ('weight_sum', "和值分佈", 2),
+    ('weight_streak', "連莊號碼", 2),
     ('weight_hot', "熱門號碼", 5),
-    ('weight_pair', "雙號同開", 2),
-    ('weight_head', "同首數", 3),
-    ('weight_tail', "同尾數", 3),
-    ('weight_miss', "連續未開期數", 2)
+    ('weight_pair', "雙號同開", 3),
+    ('weight_head', "同首數", 6),
+    ('weight_tail', "同尾數", 4),
+    ('weight_miss', "連續未開期數", 5)
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -115,7 +115,7 @@ st.subheader("📅 最新資料（前5筆）")
 st.dataframe(local_df.head(5))
 
 # 統計分析
-num_periods = st.selectbox("選擇統計期數（分析區間）", [15, 50, 100, 200], index=1)
+num_periods = st.selectbox("選擇統計期數（分析區間）", [15, 30, 50, 75, 100, 150, 200], index=1)
 df_sorted = local_df.head(num_periods)
 
 # 統計計算
