@@ -86,18 +86,18 @@ st.subheader("📅 最新資料（前 5 筆）")
 st.dataframe(local_df.head(5))
 
 # 統計分析
-num_periods = st.selectbox("選擇統計期數（分析區間）", [15, 50, 100, 200], index=1)
+num_periods = st.selectbox("選擇統計期數（分析區間）", [15, 50, 75,100,150, 200], index=1)
 df_sorted = local_df.head(num_periods)
 
 # Sidebar 權重設定
 st.sidebar.header("⚙️ 權重設定")
-weight_sum = st.sidebar.slider("和值分佈", 1, 10, 3)
-weight_streak = st.sidebar.slider("連莊號碼", 1, 10, 3)
-weight_hot = st.sidebar.slider("熱門號碼", 1, 10, 2)
-weight_pair = st.sidebar.slider("雙號同開", 1, 10, 1)
-weight_head = st.sidebar.slider("同首數（至少兩顆）", 1, 10, 1)
-weight_tail = st.sidebar.slider("同尾數（至少兩顆）", 1, 10, 1)
-weight_miss = st.sidebar.slider("連續未開期數", 1, 10, 1)
+weight_sum = st.sidebar.slider("和值分佈", 1, 10, 2)
+weight_streak = st.sidebar.slider("連莊號碼", 1, 10, 2)
+weight_hot = st.sidebar.slider("熱門號碼", 1, 10, 6)
+weight_pair = st.sidebar.slider("雙號同開", 1, 10, 2)
+weight_head = st.sidebar.slider("同首數（至少兩顆）", 1, 10, 6)
+weight_tail = st.sidebar.slider("同尾數（至少兩顆）", 1, 10, 5)
+weight_miss = st.sidebar.slider("連續未開期數", 1, 10, 4)
 weight_multiplier = st.sidebar.slider("🎚️ 全域權重倍數", 0.5, 2.0, 1.0, step=0.1)
 
 # 統計資料處理
