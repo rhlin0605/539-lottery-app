@@ -151,9 +151,11 @@ head_sorted = sorted(head_counter.items(), key=lambda x: x[1], reverse=True)[:25
 tail_sorted = sorted(tail_counter.items(), key=lambda x: x[1], reverse=True)[:25]
 sorted_miss = sorted(miss_counter.items(), key=lambda x: x[1], reverse=True)[:25]
 
-# 🔮 進階預測（20組模擬）
+# 🔮 進階預測（20組模擬 + 頻率加分系統）
 st.subheader("🔮 自動預測組合（20組模擬）")
+
 if st.button("🎯 立即產生預測號碼"):
+
     def generate_prediction():
         weighted_numbers = []
         for sum_value, _ in sum_sorted:
@@ -173,29 +175,41 @@ if st.button("🎯 立即產生預測號碼"):
         for num, miss_count in sorted_miss:
             points = min(miss_count, 5) * int(weight_miss * weight_multiplier)
             weighted_numbers.extend([num] * points)
+
         weighted_numbers = [num for num in set(weighted_numbers) if 1 <= num <= 39]
         remaining_numbers = list(set(range(1, 40)) - set(weighted_numbers))
         while len(weighted_numbers) < 5 and remaining_numbers:
             weighted_numbers.append(random.choice(list(remaining_numbers)))
+
         prediction = sorted(random.sample(weighted_numbers, 5))
         return prediction
 
+    # 模擬 20 組
     simulated_draws = [generate_prediction() for _ in range(20)]
     st.write("🔄 模擬 20 組選號：")
     for i, draw in enumerate(simulated_draws, 1):
         st.write(f"第{i}組：{draw}")
 
+    # 統計所有號碼頻率
     all_numbers = [num for draw in simulated_draws for num in draw]
     number_counts = Counter(all_numbers)
     top_numbers_counts = number_counts.most_common(15)
     st.write("🔥 20組模擬選號的熱門號碼（前15個+次數）：")
     st.dataframe(pd.DataFrame(top_numbers_counts, columns=['號碼', '次數']))
 
-    st.subheader("🎯 建議選號（依分數排序）")
-    scored_draws = []
-    for draw in simulated_draws:
-        score = sum(number_counts[num] for num in draw)
-        scored_draws.append((draw, score))
-    top_scored = sorted(scored_draws, key=lambda x: x[1], reverse=True)[:3]
-    for i, (rec, score) in enumerate(top_scored, 1):
-        st.write(f"建議第{i}組：{sorted(rec)}（總分：{score}，和值：{sum(rec)}）")
+    # 建議選號邏輯（分數機制）
+    st.subheader("🎯 建議選號（綜合分析）")
+    top_number_pool = [num for num, _ in top_numbers_counts]
+    available_numbers = set(top_number_pool)
+    recommendations = []
+    used_numbers = set()
+
+    while len(recommendations) < 3 and len(available_numbers) >= 5:
+        best_group = sorted(random.sample(list(available_numbers), 5))
+        score = sum(number_counts.get(n, 0) for n in best_group)
+        recommendations.append((best_group, score))
+        used_numbers.update(best_group)
+        available_numbers = available_numbers - used_numbers
+
+    for i, (rec, score) in enumerate(recommendations, 1):
+        st.write(f"建議第{i}組：{rec}（和值：{sum(rec)}，加總分數：{score}）")
