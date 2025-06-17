@@ -150,6 +150,8 @@ top_pairs = pair_counter.most_common(25)
 head_sorted = sorted(head_counter.items(), key=lambda x: x[1], reverse=True)[:25]
 tail_sorted = sorted(tail_counter.items(), key=lambda x: x[1], reverse=True)[:25]
 sorted_miss = sorted(miss_counter.items(), key=lambda x: x[1], reverse=True)[:25]
+# 🔍 新增篩選條件：僅保留 8~12 期未開的號碼
+filtered_miss = [(num, count) for num, count in sorted_miss if 8 <= count <= 12]
 
 # 🔮 進階預測（20組模擬 + 頻率加分系統）
 st.subheader("🔮 自動預測組合（20組模擬）")
@@ -196,6 +198,7 @@ if st.button("🎯 立即產生預測號碼"):
     top_numbers_counts = number_counts.most_common(15)
     st.write("🔥 20組模擬選號的熱門號碼（前15個+次數）：")
     st.dataframe(pd.DataFrame(top_numbers_counts, columns=['號碼', '次數']))
+    
 
     # 建議選號邏輯（分數機制）
     st.subheader("🎯 建議選號（綜合分析）")
