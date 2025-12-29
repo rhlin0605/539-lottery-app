@@ -1,218 +1,117 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 from collections import Counter
 from itertools import combinations
 import random
-from datetime import datetime
 
-# 頁面設定
-st.set_page_config(page_title="今彩539預測系統", layout="wide")
-st.title("🎯 今彩539預測系統（自動更新+統計+預測）")
+# --------------------------
+# 資料下載與處理
+# --------------------------
+@st.cache_data
 
-# 本地 CSV 檔案
-local_csv = "539_data.csv"
-try:
-    local_df = pd.read_csv(local_csv, encoding='utf-8')
-except FileNotFoundError:
-    local_df = pd.DataFrame(columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
+def download_and_parse_539_data():
+    url = "https://www.pilio.idv.tw/lto539/list.asp"
+    html = requests.get(url).content.decode("big5", errors="ignore")
+    tables = pd.read_html(html)
 
-# 日期標準化
-def standardize_date(date_str):
-    try:
-        return datetime.strptime(date_str.strip(), "%Y/%m/%d").strftime("%Y/%m/%d")
-    except:
-        try:
-            return datetime.strptime(date_str.strip(), "%Y/%m/%d(%a)").strftime("%Y/%m/%d")
-        except:
-            return date_str.strip()
+    df = tables[0].copy()
+    df.columns = ["期別", "日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
+    df = df.dropna().reset_index(drop=True)
+    df = df.head(200)  # 最多200期
+    for col in ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]:
+        df[col] = df[col].astype(int)
 
-# 取得最新資料
-url = 'https://www.pilio.idv.tw/lto539/list.asp'
-try:
-    resp = requests.get(url, timeout=10)
-    resp.encoding = 'utf-8'
-    soup = BeautifulSoup(resp.text, 'html.parser')
+    return df
 
-    tables = soup.find_all('table')
-    latest_rows = []
-    num_fetch = st.sidebar.number_input("抓取最新N期（網站資料）", 1, 100, 10)
 
-    for table in tables:
-        rows = table.find_all('tr')
-        has_header = False
-        if rows and len(rows[0].find_all('td')) >= 2:
-            first_row_text = [c.get_text(strip=True) for c in rows[0].find_all('td')]
-            if any('日期' in text or '今彩' in text for text in first_row_text):
-                has_header = True
-        start_idx = 1 if has_header else 0
-        for row in rows[start_idx:start_idx+num_fetch]:
-            cols = row.find_all('td')
-            if len(cols) >= 2 and '/' in cols[0].get_text():
-                try:
-                    date = standardize_date(cols[0].get_text(strip=True).split('(')[0])
-                    numbers_text = cols[1].get_text(strip=True).replace('\xa0', '')
-                    numbers = [int(x) for x in numbers_text.split(',')]
-                    latest_rows.append([date] + numbers)
-                except:
-                    pass
+def extract_draws(df, recent_n=100):
+    draw_cols = ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
+    draws = df[draw_cols].head(recent_n).values.tolist()
+    return [set(draw) for draw in draws]
 
-    new_data_count = 0
-    for row in latest_rows:
-        date = row[0]
-        if not local_df.empty and date in local_df['Date'].astype(str).values:
-            continue
-        new_row = pd.DataFrame([row], columns=['Date', 'NO.1', 'NO.2', 'NO.3', 'NO.4', 'NO.5'])
-        local_df = pd.concat([new_row, local_df], ignore_index=True)
-        new_data_count += 1
 
-    if new_data_count > 0:
-        local_df.drop_duplicates(subset=['Date'], inplace=True)
-        local_df.sort_values(by='Date', ascending=False, inplace=True)
-        local_df.to_csv(local_csv, index=False, encoding='utf-8')
-        backup_file = f"539_data_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        local_df.to_csv(backup_file, index=False, encoding='utf-8')
-        st.success(f"✅ 已新增 {new_data_count} 筆最新資料，並備份：{backup_file}")
+def get_top_hot_numbers(draws, top_n=13, exclude_recent=3):
+    flat_numbers = [num for draw in draws for num in draw]
+    number_counts = Counter(flat_numbers)
+
+    recent_nums = [num for draw in draws[:exclude_recent] for num in draw]
+    overhot = [num for num, cnt in Counter(recent_nums).items() if cnt >= 2]
+
+    top_hot = [num for num, _ in number_counts.most_common(20) if num not in overhot][:top_n]
+    return top_hot
+
+
+def simulate_pair_hit(draws, pair, simulations=5000, sample_size=3):
+    hits = 0
+    for _ in range(simulations):
+        sample_draws = random.sample(draws, sample_size)
+        if any(num in draw for draw in sample_draws for num in pair):
+            hits += 1
+    return hits / simulations
+
+
+def score_pair_with_rules(pair, base_prob):
+    score = base_prob
+    reasons = []
+
+    odds = [num % 2 for num in pair]
+    if sum(odds) == 1:
+        score += 0.02
+        reasons.append("奇偶平衡 +0.02")
     else:
-        st.info("📅 資料庫已是最新，無需更新。")
+        score -= 0.02
+        reasons.append("奇偶失衡 -0.02")
 
-except Exception as e:
-    st.error(f"⚠️ 抓取資料失敗：{e}")
-    st.stop()
+    tails = [num % 10 for num in pair]
+    if tails[0] == tails[1]:
+        score -= 0.03
+        reasons.append("尾數相同 -0.03")
+    else:
+        score += 0.01
+        reasons.append("尾數不同 +0.01")
 
-# 顯示最新資料
-st.subheader("📅 最新資料（前 5 筆）")
-st.dataframe(local_df.head(5))
+    return score, "；".join(reasons)
 
-# 統計分析
-num_periods = st.selectbox("選擇統計期數（分析區間）", [15, 50, 75,100,150, 200], index=1)
-df_sorted = local_df.head(num_periods)
 
-# Sidebar 權重設定
-st.sidebar.header("⚙️ 權重設定")
-weight_sum = st.sidebar.slider("和值分佈", 1, 10, 2)
-weight_streak = st.sidebar.slider("連莊號碼", 1, 10, 2)
-weight_hot = st.sidebar.slider("熱門號碼", 1, 10, 6)
-weight_pair = st.sidebar.slider("雙號同開", 1, 10, 2)
-weight_head = st.sidebar.slider("同首數（至少兩顆）", 1, 10, 6)
-weight_tail = st.sidebar.slider("同尾數（至少兩顆）", 1, 10, 5)
-weight_miss = st.sidebar.slider("連續未開期數", 1, 10, 4)
-weight_multiplier = st.sidebar.slider("🎚️ 全域權重倍數", 0.5, 2.0, 1.0, step=0.1)
+# --------------------------
+# Streamlit 介面開始
+# --------------------------
+st.title("🎯 今彩539 熱門雙號模擬分析 App")
 
-# 統計資料處理
-sum_counter = Counter()
-sum_to_draws = {}
-streak_counter = Counter()
-num_counter = Counter()
-pair_counter = Counter()
-head_counter = Counter()
-tail_counter = Counter()
-miss_counter = {num: 0 for num in range(1, 40)}
-prev_nums = set()
+with st.spinner("下載並解析最新開獎資料中..."):
+    df = download_and_parse_539_data()
+    draws = extract_draws(df)
+    st.success("最新開獎資料已讀取完成！")
 
-for _, row in df_sorted.iterrows():
-    nums = [row[f'NO.{i}'] for i in range(1, 6)]
-    total_sum = sum(nums)
-    sum_counter[total_sum] += 1
-    sum_to_draws.setdefault(total_sum, []).append(nums)
+st.markdown(f"共載入 **{len(df)} 期** 資料，顯示近 100 期統計分析")
 
-    curr_nums = set(nums)
-    for num in prev_nums & curr_nums:
-        streak_counter[num] += 1
-    prev_nums = curr_nums
+# 熱門號碼區
+top_hot = get_top_hot_numbers(draws)
+st.markdown("### 🔥 熱門號碼前 15 名 (排除近3期過熱)")
+st.write(sorted(top_hot))
 
-    for num in nums:
-        num_counter[num] += 1
+# 模擬開始
+st.markdown("---")
+st.markdown("### 🧪 雙號配對模擬（模擬未來 3 期）")
 
-    for pair in combinations(sorted(nums), 2):
-        pair_counter[pair] += 1
+if st.button("開始模擬分析"):
+    st.info("模擬中，請稍候... (約 5 秒)")
+    random.seed(42)
 
-    heads = [num // 10 for num in nums]
-    tails = [num % 10 for num in nums]
-    for head in set(heads):
-        if heads.count(head) >= 2:
-            head_counter[head] += 1
-    for tail in set(tails):
-        if tails.count(tail) >= 2:
-            tail_counter[tail] += 1
+    results = []
+    top_pairs = list(combinations(top_hot, 2))
 
-    for num in miss_counter.keys():
-        if num in curr_nums:
-            miss_counter[num] = 0
-        else:
-            miss_counter[num] += 1
+    for pair in top_pairs:
+        prob = simulate_pair_hit(draws, pair, sample_size=3)
+        score, reason = score_pair_with_rules(pair, prob)
+        results.append((pair, prob, score, reason))
 
-sum_sorted = sorted(sum_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-top_streaks = sorted(streak_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-hot_numbers = sorted(num_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-top_pairs = pair_counter.most_common(25)
-head_sorted = sorted(head_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-tail_sorted = sorted(tail_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-sorted_miss = sorted(miss_counter.items(), key=lambda x: x[1], reverse=True)[:25]
-# 🔍 新增篩選條件：僅保留 8~12 期未開的號碼
-filtered_miss = [(num, count) for num, count in sorted_miss if 8 <= count <= 12]
+    df_result = pd.DataFrame(results, columns=["號碼配對", "原始命中率", "加權後分數", "加權原因"])
+    df_result = df_result.sort_values(by="加權後分數", ascending=False).reset_index(drop=True)
+    st.markdown("#### 🏅 前 5 名加權雙號建議：")
+    st.dataframe(df_result.head(5), use_container_width=True)
 
-# 🔮 進階預測（20組模擬 + 頻率加分系統）
-st.subheader("🔮 自動預測組合（20組模擬）")
-
-if st.button("🎯 立即產生預測號碼"):
-
-    def generate_prediction():
-        weighted_numbers = []
-        for sum_value, _ in sum_sorted:
-            for nums in sum_to_draws.get(sum_value, []):
-                weighted_numbers.extend(nums * int(weight_sum * weight_multiplier))
-        for num, _ in top_streaks:
-            weighted_numbers.extend([num] * int(weight_streak * weight_multiplier))
-        for num, _ in hot_numbers:
-            weighted_numbers.extend([num] * int(weight_hot * weight_multiplier))
-        for pair, _ in top_pairs:
-            weighted_numbers.extend([pair[0]] * int(weight_pair * weight_multiplier))
-            weighted_numbers.extend([pair[1]] * int(weight_pair * weight_multiplier))
-        for head, _ in head_sorted:
-            weighted_numbers.extend([num for num in range(head*10, min(head*10+10, 40))] * int(weight_head * weight_multiplier))
-        for tail, _ in tail_sorted:
-            weighted_numbers.extend([num for num in range(tail, 40, 10)] * int(weight_tail * weight_multiplier))
-        for num, miss_count in sorted_miss:
-            points = min(miss_count, 5) * int(weight_miss * weight_multiplier)
-            weighted_numbers.extend([num] * points)
-
-        weighted_numbers = [num for num in set(weighted_numbers) if 1 <= num <= 39]
-        remaining_numbers = list(set(range(1, 40)) - set(weighted_numbers))
-        while len(weighted_numbers) < 5 and remaining_numbers:
-            weighted_numbers.append(random.choice(list(remaining_numbers)))
-
-        prediction = sorted(random.sample(weighted_numbers, 5))
-        return prediction
-
-    # 模擬 20 組
-    simulated_draws = [generate_prediction() for _ in range(20)]
-    st.write("🔄 模擬 20 組選號：")
-    for i, draw in enumerate(simulated_draws, 1):
-        st.write(f"第{i}組：{draw}")
-
-    # 統計所有號碼頻率
-    all_numbers = [num for draw in simulated_draws for num in draw]
-    number_counts = Counter(all_numbers)
-    top_numbers_counts = number_counts.most_common(15)
-    st.write("🔥 20組模擬選號的熱門號碼（前15個+次數）：")
-    st.dataframe(pd.DataFrame(top_numbers_counts, columns=['號碼', '次數']))
-    
-
-    # 建議選號邏輯（分數機制）
-    st.subheader("🎯 建議選號（綜合分析）")
-    top_number_pool = [num for num, _ in top_numbers_counts]
-    available_numbers = set(top_number_pool)
-    recommendations = []
-    used_numbers = set()
-
-    while len(recommendations) < 3 and len(available_numbers) >= 5:
-        best_group = sorted(random.sample(list(available_numbers), 5))
-        score = sum(number_counts.get(n, 0) for n in best_group)
-        recommendations.append((best_group, score))
-        used_numbers.update(best_group)
-        available_numbers = available_numbers - used_numbers
-
-    for i, (rec, score) in enumerate(recommendations, 1):
-        st.write(f"建議第{i}組：{rec}（和值：{sum(rec)}，加總分數：{score}）")
+    st.markdown("---")
+    with st.expander("📋 查看所有模擬配對結果"):
+        st.dataframe(df_result, use_container_width=True)
