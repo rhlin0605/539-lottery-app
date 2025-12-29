@@ -10,34 +10,45 @@ import random
 def fetch_latest_539_data(max_draws=120):
     url = "https://www.pilio.idv.tw/lto539/list.asp"
     res = requests.get(url)
-    res.encoding = 'big5'
+    res.encoding = "big5"
     soup = BeautifulSoup(res.text, "html.parser")
     rows = soup.select("table.dynamic-table tr")
-    
+
     results = []
-    for i in range(0, len(rows) - 1, 2):
+    today = datetime.today()
+    
+    for i in range(0, len(rows) - 1):
         date_row = rows[i].find_all("td")
         num_row = rows[i+1].find_all("td")
-        if len(date_row) != 1 or len(num_row) != 1:
-            continue
-        date_str = date_row[0].get_text(strip=True).split()[0]
-        numbers_str = num_row[0].get_text(strip=True)
-        try:
-            m, d = map(int, date_str.split("/"))
-            today = datetime.today()
-            y = today.year
-            if m > today.month + 1:
-                y -= 1
-            full_date = f"{y}/{m:02d}/{d:02d}"
-            numbers = [int(n.strip()) for n in numbers_str.split(",") if n.strip().isdigit()]
+
+        if len(date_row) == 1 and len(num_row) == 1:
+            date_text = date_row[0].get_text(strip=True)
+            date_part = date_text.split()[0]  # e.g. "12/29"
+            try:
+                month, day = map(int, date_part.split("/"))
+                year = today.year
+                if month > today.month + 1:
+                    year -= 1
+                full_date = f"{year}/{month:02d}/{day:02d}"
+            except:
+                continue
+
+            number_text = num_row[0].get_text(strip=True)
+            number_parts = number_text.split(",")
+            numbers = []
+            for part in number_parts:
+                num = ''.join(filter(str.isdigit, part))
+                if num:
+                    numbers.append(int(num))
             if len(numbers) == 5:
                 results.append([full_date] + numbers)
-        except:
-            continue
+
         if len(results) >= max_draws:
             break
+
     df = pd.DataFrame(results, columns=["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"])
     return df
+
 
 def prepare_draws(df, recent_n=100):
     draw_cols = ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
