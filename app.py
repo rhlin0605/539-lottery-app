@@ -83,4 +83,3 @@ if st.button("📥 取得最新 539 開獎資料"):
     st.dataframe(df_result.head(5), use_container_width=True)
 else:
     st.info("請按上方按鈕以載入最新資料並執行模擬。")
-
