@@ -65,7 +65,7 @@ if st.button("📥 取得最新 539 開獎資料"):
     draws = prepare_draws(df)
 
     st.write("⬇️ 最新 5 期開獎紀錄：")
-    st.dataframe(df[["期別", "日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]].head(5))
+    st.dataframe(df[["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]].head(5))
 
     st.write("📊 執行模擬中，請稍候...")
 
@@ -83,3 +83,4 @@ if st.button("📥 取得最新 539 開獎資料"):
     st.dataframe(df_result.head(5), use_container_width=True)
 else:
     st.info("請按上方按鈕以載入最新資料並執行模擬。")
+
