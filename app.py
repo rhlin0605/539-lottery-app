@@ -8,7 +8,7 @@ from itertools import combinations
 
 @st.cache_data
 def fetch_latest_539_data():
-    url = "https://www.taiwanlottery.com.tw/lotto/dailycash/history.aspx"
+    url = "https://www.pilio.idv.tw/lto539/list.asp"
     html = requests.get(url).text
     tables = pd.read_html(html)
     df = tables[1].copy()
@@ -83,5 +83,3 @@ if st.button("📥 取得最新 539 開獎資料"):
     st.dataframe(df_result.head(5), use_container_width=True)
 else:
     st.info("請按上方按鈕以載入最新資料並執行模擬。")
-
-
