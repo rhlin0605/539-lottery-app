@@ -5,50 +5,57 @@ from io import StringIO
 from collections import Counter
 import random
 from itertools import combinations
+from bs4 import BeautifulSoup
+from datetime import datetime
 
-@st.cache_data
 def fetch_latest_539_data():
     url = "https://www.pilio.idv.tw/lto539/list.asp"
-    html = requests.get(url).text
-    tables = pd.read_html(html)
-    table = tables[1]
+    response = requests.get(url)
+    response.encoding = "utf-8"
+    soup = BeautifulSoup(response.text, "html.parser")
+    
+    table = soup.find("table", {"border": "1"})
+    rows = table.find_all("tr")[1:]  # 跳過表頭
 
-    rows = table.values.tolist()
-    records = []
-    today = pd.Timestamp.today()
-    current_year = today.year
-    last_month = today.month
-
-    for i in range(0, len(rows) - 1, 2):  # 每2列一組
+    data = []
+    i = 0
+    while i < len(rows) - 1:
         date_row = rows[i]
-        number_row = rows[i + 1]
+        num_row = rows[i + 1]
 
-        date_str = date_row[0]
-        number_info = number_row[0]
-
-        # 過濾非正常資料
-        if not isinstance(date_str, str) or '/' not in date_str:
+        # 取得日期
+        date_text = date_row.find_all("td")[0].text.strip()
+        if not date_text:
+            i += 2
             continue
-        if not isinstance(number_info, str) or ',' not in number_info:
+        
+        try:
+            month, day = map(int, date_text.split("/"))
+            today = datetime.today()
+            year = today.year
+            # 若今天是1月但資料顯示為12月，代表資料屬於去年
+            if today.month == 1 and month == 12:
+                year -= 1
+            date_full = f"{year}/{month:02d}/{day:02d}"
+        except:
+            i += 2
             continue
 
-        # 處理年份判斷（跨年處理）
-        month = int(date_str.split('/')[0])
-        year = current_year
-        if month > last_month:
-            year -= 1
-
-        date_formatted = f"{year}/{date_str}"
-
-        # 號碼解析
-        numbers = number_info.split(' ')[-1].split(',')
+        # 取得號碼
+        tds = num_row.find_all("td")
+        if len(tds) < 2:
+            i += 2
+            continue
+        number_str = tds[1].text.strip()
+        numbers = [int(x) for x in number_str.split(",") if x.strip().isdigit()]
         if len(numbers) != 5:
+            i += 2
             continue
 
-        record = [date_formatted] + [int(n) for n in numbers]
-        records.append(record)
+        data.append([date_full] + numbers)
+        i += 2
 
-    df = pd.DataFrame(records, columns=["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"])
+    df = pd.DataFrame(data, columns=["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"])
     return df
 
 def prepare_draws(df, recent_n=100):
