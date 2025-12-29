@@ -36,6 +36,7 @@ def fetch_latest_539():
             except Exception as e:
                 continue
     return None, None
+    
 def prepare_draws(df, recent_n=100):
     draw_cols = ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
     draws = df[draw_cols].astype(int).values.tolist()
@@ -80,7 +81,7 @@ st.set_page_config(page_title="539 雙號策略模擬", layout="centered")
 st.title("🎯 今彩 539 熱門雙號組合預測模擬")
 
 if st.button("📥 取得最新 539 開獎資料"):
-    df = fetch_latest_539_data()
+    date_str, numbers = fetch_latest_539()
     st.success("資料抓取成功，總共筆數：" + str(len(df)))
     draws = prepare_draws(df)
 
