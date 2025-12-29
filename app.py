@@ -1,104 +1,73 @@
-
 import streamlit as st
-
-import re
-from datetime import datetime
-
-def parse_date_with_fallback(date_str: str, current_year=2025, default_month=12):
-    match = re.match(r"(\d{1,2})\(?[一二三四五六日]?\)?", date_str)
-    if match:
-        day = int(match.group(1))
-        try:
-            dt = datetime(current_year, default_month, day)
-            return dt.strftime("%Y/%m/%d")
-        except ValueError:
-            return None
-    try:
-        dt = datetime.strptime(f"{current_year}/{date_str}", "%Y/%m/%d")
-        return dt.strftime("%Y/%m/%d")
-    except Exception:
-        return None
 import pandas as pd
 import requests
-from io import StringIO
-from collections import Counter
-import random
+from bs4 import BeautifulSoup
 from itertools import combinations
+from collections import Counter
+
+st.set_page_config(page_title="今彩539 熱門號碼模擬器", layout="wide")
 
 @st.cache_data
-def fetch_latest_539_data():
-    url = "https://www.taiwanlottery.com.tw/lotto/dailycash/history.aspx"
-    html = requests.get(url).text
-    tables = pd.read_html(html)
-    df = tables[1].copy()
-    df.columns = ["期別", "日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
-    df = df.dropna().head(200)
-    return df
+def download_and_parse_539_data():
+    url = "https://www.pilio.idv.tw/lto539/list.asp"
+    res = requests.get(url)
+    res.encoding = "big5"
 
-def prepare_draws(df, recent_n=100):
-    draw_cols = ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
-    draws = df[draw_cols].astype(int).values.tolist()
-    return [set(draw) for draw in draws[:recent_n]]
+    soup = BeautifulSoup(res.text, "html.parser")
+    tables = soup.find_all("table")
+    target_table = None
+    for table in tables:
+        if "期數" not in table.text and "NO.1" in table.text:
+            target_table = table
+            break
 
-def get_top_hot_numbers(draws, top_n=13, exclude_recent=3):
-    flat_numbers = [num for draw in draws for num in draw]
-    number_counts = Counter(flat_numbers)
-    recent_nums = [num for draw in draws[:exclude_recent] for num in draw]
-    overhot = [num for num, cnt in Counter(recent_nums).items() if cnt >= 2]
-    top_hot = [num for num, _ in number_counts.most_common(20) if num not in overhot][:top_n]
-    return top_hot
+    if target_table is None:
+        st.error("找不到今彩539資料表格，請稍後再試。")
+        return pd.DataFrame()
 
-def simulate_pair_hit(draws, pair, simulations=5000, sample_size=3):
-    hits = 0
-    for _ in range(simulations):
-        sample_draws = random.sample(draws, sample_size)
-        if any(num in draw for draw in sample_draws for num in pair):
-            hits += 1
-    return hits / simulations
+    df = pd.read_html(str(target_table), header=0)[0]
+    df = df.dropna(how="any")
+    df = df[df["NO.1"].apply(lambda x: isinstance(x, int))]
 
-def score_pair_with_rules(pair, base_prob):
-    score = base_prob
-    reasons = []
-    odds = [num % 2 for num in pair]
-    if sum(odds) == 1:
-        score += 0.02
-        reasons.append("奇偶平衡 +0.02")
-    else:
-        score -= 0.02
-        reasons.append("奇偶失衡 -0.02")
-    tails = [num % 10 for num in pair]
-    if tails[0] == tails[1]:
-        score -= 0.03
-        reasons.append("尾數相同 -0.03")
-    else:
-        score += 0.01
-        reasons.append("尾數不同 +0.01")
-    return score, "；".join(reasons)
+    # 日期轉換為 yyyy/mm/dd 格式
+    def clean_date(d):
+        if isinstance(d, str) and "(" in d:
+            d = d.split("(")[0]
+        try:
+            mm, dd = map(int, d.split("/"))
+            return f"2025/{mm:02d}/{dd:02d}"
+        except:
+            return None
 
-st.set_page_config(page_title="539 雙號策略模擬", layout="centered")
-st.title("🎯 今彩 539 熱門雙號組合預測模擬")
+    df["日期"] = df["日期"].apply(clean_date)
+    df = df.dropna(subset=["日期"])
+    return df.reset_index(drop=True)
 
-if st.button("📥 取得最新 539 開獎資料"):
-    df = fetch_latest_539_data()
-    st.success("資料抓取成功，總共筆數：" + str(len(df)))
-    draws = prepare_draws(df)
+def score_pair(pair):
+    even_count = sum(1 for x in pair if x % 2 == 0)
+    last_digit_count = len(set(x % 10 for x in pair))
+    return even_count + last_digit_count
 
-    st.write("⬇️ 最新 5 期開獎紀錄：")
-    st.dataframe(df[["期別", "日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]].head(5))
+def get_top_weighted_pairs(df, recent_draws=3, top_n=5):
+    recent_data = df.head(recent_draws)
+    all_numbers = recent_data[[f"NO.{i}" for i in range(1, 6)]].values.flatten()
+    number_counts = Counter(all_numbers)
 
-    st.write("📊 執行模擬中，請稍候...")
+    top_numbers = [num for num, _ in number_counts.most_common(10)]
+    top_pairs = list(combinations(top_numbers, 2))
+    pair_scores = [(pair, score_pair(pair)) for pair in top_pairs]
+    sorted_pairs = sorted(pair_scores, key=lambda x: x[1], reverse=True)
+    return sorted_pairs[:top_n]
 
-    top_hot = get_top_hot_numbers(draws)
-    top_pairs = list(combinations(top_hot, 2))
-    results = []
-    random.seed(42)
-    for pair in top_pairs:
-        prob = simulate_pair_hit(draws, pair)
-        score, reason = score_pair_with_rules(pair, prob)
-        results.append((pair, prob, score, reason))
-    df_result = pd.DataFrame(results, columns=["號碼配對", "原始命中率", "加權後分數", "加權原因"])
-    df_result = df_result.sort_values(by="加權後分數", ascending=False).reset_index(drop=True)
-    st.subheader("🏆 前 5 名雙號建議組合（未來 3 期）")
-    st.dataframe(df_result.head(5), use_container_width=True)
-else:
-    st.info("請按上方按鈕以載入最新資料並執行模擬。")
+# App 主流程
+st.title("🎯 今彩539 熱門號碼策略模擬器")
+st.markdown("資料來源：[pilio.idv.tw](https://www.pilio.idv.tw/lto539/list.asp)｜策略固定為最近 **3期** 模擬 + 熱門號碼加權（奇偶數 + 尾數）")
+
+df = download_and_parse_539_data()
+if not df.empty:
+    st.dataframe(df.head(10), use_container_width=True)
+
+    top_pairs = get_top_weighted_pairs(df)
+    st.subheader("🔥 模擬推薦前5組號碼組合")
+    for idx, (pair, score) in enumerate(top_pairs, 1):
+        st.markdown(f"**#{idx} ➤ 號碼：{pair[0]}、{pair[1]} ｜ 分數：{score}**")
