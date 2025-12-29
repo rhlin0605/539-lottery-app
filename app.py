@@ -11,9 +11,44 @@ def fetch_latest_539_data():
     url = "https://www.pilio.idv.tw/lto539/list.asp"
     html = requests.get(url).text
     tables = pd.read_html(html)
-    df = tables[1].copy()
-    df.columns = ["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
-    df = df.dropna().head(200)
+    table = tables[1]
+
+    rows = table.values.tolist()
+    records = []
+    today = pd.Timestamp.today()
+    current_year = today.year
+    last_month = today.month
+
+    for i in range(0, len(rows) - 1, 2):  # 每2列一組
+        date_row = rows[i]
+        number_row = rows[i + 1]
+
+        date_str = date_row[0]
+        number_info = number_row[0]
+
+        # 過濾非正常資料
+        if not isinstance(date_str, str) or '/' not in date_str:
+            continue
+        if not isinstance(number_info, str) or ',' not in number_info:
+            continue
+
+        # 處理年份判斷（跨年處理）
+        month = int(date_str.split('/')[0])
+        year = current_year
+        if month > last_month:
+            year -= 1
+
+        date_formatted = f"{year}/{date_str}"
+
+        # 號碼解析
+        numbers = number_info.split(' ')[-1].split(',')
+        if len(numbers) != 5:
+            continue
+
+        record = [date_formatted] + [int(n) for n in numbers]
+        records.append(record)
+
+    df = pd.DataFrame(records, columns=["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"])
     return df
 
 def prepare_draws(df, recent_n=100):
