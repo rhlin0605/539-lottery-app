@@ -11,10 +11,15 @@ from datetime import datetime
 def fetch_latest_539_data():
     url = "https://www.pilio.idv.tw/lto539/list.asp"
     response = requests.get(url)
-    response.encoding = "utf-8"
+    response.encoding = "big5"  # ✅ 改為正確編碼
+
     soup = BeautifulSoup(response.text, "html.parser")
-    
-    table = soup.find("table", {"border": "1"})
+
+    # ✅ 找到正確表格（含有開獎號碼）
+    table = soup.find("table", {"width": "600", "border": "1"})
+    if not table:
+        return pd.DataFrame()
+
     rows = table.find_all("tr")[1:]  # 跳過表頭
 
     data = []
@@ -23,17 +28,13 @@ def fetch_latest_539_data():
         date_row = rows[i]
         num_row = rows[i + 1]
 
-        # 取得日期
-        date_text = date_row.find_all("td")[0].text.strip()
-        if not date_text:
-            i += 2
-            continue
-        
+        # 日期列（如 12/29）
+        date_text = date_row.get_text(strip=True)
         try:
             month, day = map(int, date_text.split("/"))
             today = datetime.today()
             year = today.year
-            # 若今天是1月但資料顯示為12月，代表資料屬於去年
+            # 處理跨年：如果今天是 1 月，但資料是 12 月，代表是去年
             if today.month == 1 and month == 12:
                 year -= 1
             date_full = f"{year}/{month:02d}/{day:02d}"
@@ -41,11 +42,12 @@ def fetch_latest_539_data():
             i += 2
             continue
 
-        # 取得號碼
+        # 號碼列：如「25(一) 05, 10, 13, 29, 37」
         tds = num_row.find_all("td")
         if len(tds) < 2:
             i += 2
             continue
+
         number_str = tds[1].text.strip()
         numbers = [int(x) for x in number_str.split(",") if x.strip().isdigit()]
         if len(numbers) != 5:
