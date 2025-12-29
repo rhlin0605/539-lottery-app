@@ -1,42 +1,44 @@
 import streamlit as st
 import pandas as pd
 import requests
-from io import StringIO
-from collections import Counter
-import random
-from itertools import combinations
 from bs4 import BeautifulSoup
 from datetime import datetime
+from collections import Counter
+from itertools import combinations
+import random
 
-def fetch_latest_539():
+def fetch_latest_539_data(max_draws=120):
     url = "https://www.pilio.idv.tw/lto539/list.asp"
-    response = requests.get(url)
-    response.encoding = "big5"  # 網站編碼為 big5
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    # 尋找所有中獎資料列
+    res = requests.get(url)
+    res.encoding = 'big5'
+    soup = BeautifulSoup(res.text, "html.parser")
     rows = soup.select("table.dynamic-table tr")
     
-    for row in rows:
-        cells = row.find_all("td")
-        if len(cells) == 2:
-            date_raw = cells[0].get_text(strip=True).split("\n")[0]  # 取 "12/29"
-            numbers_raw = cells[1].get_text(strip=True)  # "05, 10, 13, 29, 37"
-            try:
-                month, day = map(int, date_raw.split("/"))
-                year = datetime.today().year
-                today = datetime.today()
-                # 若跨年（例如12月時出現 1/2），補隔年
-                if month > today.month + 1:
-                    year += 1
-                date_str = f"{year}/{month:02d}/{day:02d}"
-                numbers = [n.strip() for n in numbers_raw.split(",")]
-                if len(numbers) == 5:
-                    return date_str, numbers
-            except Exception as e:
-                continue
-    return None, None
-    
+    results = []
+    for i in range(0, len(rows) - 1, 2):
+        date_row = rows[i].find_all("td")
+        num_row = rows[i+1].find_all("td")
+        if len(date_row) != 1 or len(num_row) != 1:
+            continue
+        date_str = date_row[0].get_text(strip=True).split()[0]
+        numbers_str = num_row[0].get_text(strip=True)
+        try:
+            m, d = map(int, date_str.split("/"))
+            today = datetime.today()
+            y = today.year
+            if m > today.month + 1:
+                y -= 1
+            full_date = f"{y}/{m:02d}/{d:02d}"
+            numbers = [int(n.strip()) for n in numbers_str.split(",") if n.strip().isdigit()]
+            if len(numbers) == 5:
+                results.append([full_date] + numbers)
+        except:
+            continue
+        if len(results) >= max_draws:
+            break
+    df = pd.DataFrame(results, columns=["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"])
+    return df
+
 def prepare_draws(df, recent_n=100):
     draw_cols = ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
     draws = df[draw_cols].astype(int).values.tolist()
@@ -81,10 +83,9 @@ st.set_page_config(page_title="539 雙號策略模擬", layout="centered")
 st.title("🎯 今彩 539 熱門雙號組合預測模擬")
 
 if st.button("📥 取得最新 539 開獎資料"):
-    date_str, numbers = fetch_latest_539()
-    st.success("資料抓取成功，總共筆數：" + str(len(df)))
+    df = fetch_latest_539_data()
+    st.success(f"資料抓取成功，共 {len(df)} 筆開獎紀錄！")
     draws = prepare_draws(df)
-
     st.write("⬇️ 最新 5 期開獎紀錄：")
     st.dataframe(df[["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]].head(5))
 
