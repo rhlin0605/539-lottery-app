@@ -283,6 +283,8 @@ def simulate_pair(pair: tuple[int, int], df: pd.DataFrame, simulations: int = 50
 # Streamlit UI
 # ===============================
 def main():
+    st.write("DEBUG secrets github:", st.secrets["github"])
+
     st.title("今彩539 雙號策略推薦系統（GitHub 永久資料版）")
 
     cfg = get_github_cfg()
@@ -363,3 +365,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
