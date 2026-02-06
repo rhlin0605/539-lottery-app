@@ -126,7 +126,7 @@ def merge_and_update(local_df: pd.DataFrame, web_df: pd.DataFrame) -> tuple[pd.D
 # Strategy (your logic) :contentReference[oaicite:6]{index=6}
 # ===============================
 
-def df_to_draw_sets(df: pd.DataFrame, recent_n: int):
+def df_to_draw_sets(df, recent_n):
     draw_cols = ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
     draws = df[draw_cols].dropna().astype(int).values.tolist()
     draws = draws[:recent_n]  # recent first
@@ -308,5 +308,6 @@ if do_run:
         )
     except Exception as e:
         st.error(f"策略執行失敗：{e}")
+
 
 
