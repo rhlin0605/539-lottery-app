@@ -1,368 +1,311 @@
-import base64
-import io
-import json
+# app.py
+# Streamlit app for California Fantasy 5 (加州天天樂) auto-fetch + your strategy simulation
+# Strategy source: your provided script logic (hot numbers, exclude over-hot, pair simulation, weighting) :contentReference[oaicite:3]{index=3}
+
+import re
 import random
-from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+fr:contentReference[oaicite:4]{index=4}ombinations
+from collections import Counter
+from datetime import datetime
 
 import pandas as pd
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
+# ===============================
+# Config
+# ===============================
+DEFAULT_CSV_PATH = "Fan_number.csv"
+
+# Primary data source (accessible & has recent results listing)
+SOURCE_SC888 = "https://sc888.net/index.php?s=%2FLotteryFan%2Findex"  # :contentReference[oaicite:5]{index=5}
+
+# A simple user-agent reduces some trivial blocks
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 # ===============================
-# 基本設定
+# Utilities: parse and normalize
 # ===============================
-TZ_TAIPEI = timezone(timedelta(hours=8))
-DEFAULT_COLS = ["日期", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
 
+def normalize_date_to_csv_fmt(dt: datetime) -> str:
+    """Return 'YYYY/M/D' (no zero padding), matching your CSV style."""
+    return f"{dt.year}/{dt.month}/{dt.day}"
 
-# ===============================
-# GitHub 設定資料類
-# ===============================
-@dataclass
-class GitHubCfg:
-    token: str
-    owner: str
-    repo: str
-    branch: str
-    path: str
-    user_name: str
-    user_email: str
+def parse_sc888_fantasy5(html: str) -> pd.DataFrame:
+    """
+    Parse sc888 '加州天天樂' page into DataFrame with columns:
+    date, NO.1..NO.5
 
+    The page text includes blocks like:
+    2026-02-06 星期五 08 26 28 32 38
+    We'll regex scan for: YYYY-MM-DD + 5 numbers (1-39).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text("\n", strip=True)
 
-def get_github_cfg() -> GitHubCfg:
-    g = st.secrets["github"]
-    return GitHubCfg(
-        token=g["token"],
-        owner=g["repo_owner"],
-        repo=g["repo_name"],
-        branch=g.get("branch", "main"),
-        path=g.get("csv_path", "539_data.csv"),
-        user_name=g.get("commit_user_name", "streamlit-bot"),
-        user_email=g.get("commit_user_email", "streamlit-bot@users.noreply.github.com"),
+    # Match: date + (optional weekday text) + five numbers (allow leading zeros)
+    # We'll capture: YYYY-MM-DD then 5 numbers separated by whitespace/newlines
+    pattern = re.compile(
+        r"(?P<date>\d{4}-\d{2}-\d{2})\s*(?:星期[一二三四五六日])?\s*"
+        r"(?P<n1>\d{1,2})\s+(?P<n2>\d{1,2})\s+(?P<n3>\d{1,2})\s+(?P<n4>\d{1,2})\s+(?P<n5>\d{1,2})"
     )
 
+    rows = []
+    for m in pattern.finditer(text):
+        d = datetime.strptime(m.group("date"), "%Y-%m-%d")
+        nums = [int(m.group(f"n{i}")) for i in range(1, 6)]
 
-# ===============================
-# HTTP Helpers
-# ===============================
-def http_get(url: str, headers: dict | None = None, timeout: int = 20) -> requests.Response:
-    return requests.get(url, headers=headers, timeout=timeout)
+        # Basic sanity: Fantasy 5 is 1~39, 5 unique numbers
+        if any(n < 1 or n > 39 for n in nums):
+            continue
+        if len(set(nums)) != 5:
+            continue
 
+        rows.append([normalize_date_to_csv_fmt(d), *nums])
 
-def http_put(url: str, headers: dict, payload: dict, timeout: int = 20) -> requests.Response:
-    return requests.put(url, headers=headers, data=json.dumps(payload), timeout=timeout)
+    if not rows:
+        return pd.DataFrame(columns=["date", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"])
 
+    df = pd.DataFrame(rows, columns=["date", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"])
 
-# ===============================
-# 讀取 GitHub CSV（raw）
-# ===============================
-@st.cache_data(ttl=3600, show_spinner=False)
-def read_csv_from_github_raw(owner: str, repo: str, branch: str, path: str) -> str:
-    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-    r = http_get(raw_url)
-    if r.status_code != 200:
-        raise RuntimeError(f"GitHub raw 讀取失敗: {r.status_code} {r.text[:200]}")
-    return r.text
+    # sc888 page lists recent first; keep recent-first
+    # Remove duplicates by date (keep first)
+    df = df.drop_duplicates(subset=["date"], keep="first")
 
+    # Sort by date desc (recent first)
+    df["__dt"] = pd.to_datetime(df["date"], format="%Y/%m/%d")
+    df = df.sort_values("__dt", ascending=False).drop(columns="__dt").reset_index(drop=True)
+    return df
 
-def read_df_from_github(cfg: GitHubCfg) -> pd.DataFrame:
-    try:
-        csv_text = read_csv_from_github_raw(cfg.owner, cfg.repo, cfg.branch, cfg.path)
-        df = pd.read_csv(io.StringIO(csv_text))
-    except Exception:
-        df = pd.DataFrame(columns=DEFAULT_COLS)
+@st.cache_data(ttl=300)
+def fetch_latest_from_web() -> pd.DataFrame:
+    """Fetch latest draws from the web source(s)."""
+    resp = requests.get(SOURCE_SC888, headers=HEADERS, timeout=20)
+    resp.raise_for_status()
+    return parse_sc888_fantasy5(resp.text)
 
-    # 標準化欄位
-    for c in DEFAULT_COLS:
-        if c not in df.columns:
-            df[c] = pd.NA
-    df = df[DEFAULT_COLS].copy()
+def load_local_csv(csv_path: str) -> pd.DataFrame:
+    df = pd.read_csv(csv_path)
+    required = ["date", "NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"CSV 缺少欄位：{missing}（需要：{required}）")
 
-    # 日期轉換
-    if len(df) > 0:
-        df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
-        df = df.dropna(subset=["日期"])
-
-    # 數字轉 int
+    # Normalize types
     for c in ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
 
-    # 排序（新到舊）
-    if len(df) > 0:
-        df = df.sort_values("日期", ascending=False).reset_index(drop=True)
+    # Keep recent first
+    df["__dt"] = pd.to_datetime(df["date"], format="%Y/%m/%d", errors="coerce")
+    df = df.dropna(subset=["__dt"]).sort_values("__dt", ascending=False).drop(columns="__dt")
+    df = df.reset_index(drop=True)
     return df
 
-
-# ===============================
-# GitHub Contents API：取得 SHA + 回寫內容
-# ===============================
-def github_contents_url(cfg: GitHubCfg) -> str:
-    return f"https://api.github.com/repos/{cfg.owner}/{cfg.repo}/contents/{cfg.path}"
-
-
-def github_headers(cfg: GitHubCfg) -> dict:
-    return {
-        "Authorization": f"Bearer {cfg.token}",
-        "Accept": "application/vnd.github+json",
-        "Content-Type": "application/json",
-    }
-
-
-def get_github_file_sha(cfg: GitHubCfg) -> str | None:
-    url = github_contents_url(cfg)
-    r = http_get(url, headers=github_headers(cfg))
-    if r.status_code == 200:
-        js = r.json()
-        return js.get("sha")
-    if r.status_code == 404:
-        return None
-    raise RuntimeError(f"取得 GitHub 檔案 SHA 失敗: {r.status_code} {r.text[:200]}")
-
-
-def push_df_to_github(cfg: GitHubCfg, df: pd.DataFrame, message: str) -> None:
-    # 內容轉 CSV
-    df_out = df.copy()
-    # 日期輸出成 YYYY/MM/DD（與你原本格式一致）
-    df_out["日期"] = df_out["日期"].dt.strftime("%Y/%m/%d")
-    csv_str = df_out.to_csv(index=False)
-
-    content_b64 = base64.b64encode(csv_str.encode("utf-8")).decode("utf-8")
-    sha = get_github_file_sha(cfg)
-
-    payload = {
-        "message": message,
-        "content": content_b64,
-        "branch": cfg.branch,
-        "committer": {"name": cfg.user_name, "email": cfg.user_email},
-    }
-    if sha:
-        payload["sha"] = sha
-
-    url = github_contents_url(cfg)
-    r = http_put(url, headers=github_headers(cfg), payload=payload)
-
-    if r.status_code not in (200, 201):
-        # 常見：409 conflict（多人同時 push）
-        raise RuntimeError(f"GitHub 回寫失敗: {r.status_code} {r.text[:300]}")
-
-
-# ===============================
-# 官網抓取：今彩539
-# ===============================
-def infer_year_for_mmdd(mm: int, dd: int, now: datetime) -> int:
+def merge_and_update(local_df: pd.DataFrame, web_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    官網若只有 MM/DD，需推斷年份：
-    - 預設用今年
-    - 若 mm 大於當前月份很多（例如現在 1 月，抓到 12 月） -> 視為去年
+    Return:
+    - merged_df: local + new web rows (recent first)
+    - new_rows_df: only newly added rows
     """
-    year = now.year
-    if mm > now.month + 1:  # 容錯：1月看到12月
-        year -= 1
-    return year
+    local_dates = set(local_df["date"].astype(str).tolist())
+    new_rows = web_df[~web_df["date"].astype(str).isin(local_dates)].copy()
+    merged = pd.concat([new_rows, local_df], ignore_index=True)
 
+    # De-dup & sort recent first
+    merged["__dt"] = pd.to_datetime(merged["date"], format="%Y/%m/%d", errors="coerce")
+    merged = merged.dropna(subset=["__dt"]).sort_values("__dt", ascending=False)
+    merged = merged.drop_duplicates(subset=["date"], keep="first").drop(columns="__dt").reset_index(drop=True)
 
-@st.cache_data(ttl=1800, show_spinner=False)  # 半小時最多抓一次，避免被打爆
-def fetch_latest_draws_from_website() -> pd.DataFrame:
-    url = "https://www.lottery.com.tw/l539?c=list"
-    resp = http_get(url)
-    resp.encoding = "utf-8"
-    soup = Beautifulsoup = BeautifulSoup(resp.text, "html.parser")
-
-    rows = soup.select("table.tableWin tbody tr")
-    now = datetime.now(TZ_TAIPEI)
-
-    data = []
-    for row in rows:
-        cells = row.find_all("td")
-        if len(cells) < 2:
-            continue
-
-        raw_date = cells[0].get_text(strip=True)
-        raw_numbers = cells[1].get_text(strip=True)
-
-        # date: "MM/DD"
-        try:
-            mm_str, dd_str = raw_date.split("/")
-            mm, dd = int(mm_str), int(dd_str)
-            year = infer_year_for_mmdd(mm, dd, now)
-            parsed = datetime(year, mm, dd, tzinfo=TZ_TAIPEI)
-        except Exception:
-            continue
-
-        parts = raw_numbers.replace("、", ",").replace(" ", ",").split(",")
-        nums = [int(p) for p in parts if p.isdigit()]
-        if len(nums) != 5:
-            continue
-
-        data.append(
-            {
-                "日期": parsed.date().isoformat(),
-                "NO.1": nums[0],
-                "NO.2": nums[1],
-                "NO.3": nums[2],
-                "NO.4": nums[3],
-                "NO.5": nums[4],
-            }
-        )
-
-    df = pd.DataFrame(data)
-    if len(df) == 0:
-        return pd.DataFrame(columns=DEFAULT_COLS)
-
-    df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
-    df = df.dropna(subset=["日期"])
-    df = df.sort_values("日期", ascending=False).reset_index(drop=True)
-    return df[DEFAULT_COLS]
-
+    return merged, new_rows.reset_index(drop=True)
 
 # ===============================
-# 更新流程：讀 GitHub → 抓官網 → 補新 → 回寫 GitHub
+# Strategy (your logic) :contentReference[oaicite:6]{index=6}
 # ===============================
-def update_github_csv(cfg: GitHubCfg) -> pd.DataFrame:
-    df_old = read_df_from_github(cfg)
-    df_web = fetch_latest_draws_from_website()
 
-    if len(df_old) == 0:
-        last_date = None
-    else:
-        last_date = df_old["日期"].max()
+def df_to_draw_sets(df: pd.DataFrame, rec:contentReference[oaicite:7]{index=7}et[int]]:
+    draw_cols = ["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]
+    draws = df[draw_cols].dropna().astype(int).values.tolist()
+    draws = draws[:recent_n]  # recent first
+    return [set(d) for d in draws]
 
-    if last_date is not None:
-        df_new = df_web[df_web["日期"] > last_date].copy()
-    else:
-        df_new = df_web.copy()
+def get_top_hot_numbers(draws: list[set[int]], top_n: int, exclude_recent: int) -> list[int]:
+    flat_numbers = [num for draw in draws for num in draw]
+    number_counts = Counter(flat_numbers)
 
-    if len(df_new) == 0:
-        return df_old
+    recent_nums = [num for draw in draws[:exclude_recent] for num in draw]
+    overhot = [num for num, cnt in Counter(recent_nums).items() if cnt >= 2]
 
-    df_combined = pd.concat([df_old, df_new], ignore_index=True)
-    df_combined = df_combined.drop_duplicates(subset=["日期"])
-    df_combined = df_combined.sort_values("日期", ascending=False).reset_index(drop=True)
+    top_hot = [num for num, _ in number_counts.most_common(20) if num not in overhot][:top_n]
+    return top_hot
 
-    # Push 回 GitHub（避免每次都 commit：只有有新資料才 commit）
-    msg = f"Auto update 539_data.csv (+{len(df_new)} draws) {datetime.now(TZ_TAIPEI).strftime('%Y-%m-%d %H:%M:%S %z')}"
-    push_df_to_github(cfg, df_combined, msg)
-
-    # 重要：push 完後，Streamlit cache 可能還拿舊的 raw。這裡手動清一次相關 cache。
-    read_csv_from_github_raw.clear()
-
-    return df_combined
-
-
-# ===============================
-# 策略（你原本的邏輯保留，僅做安全修正）
-# ===============================
-def get_hot_numbers(df: pd.DataFrame, recent_periods: int = 20) -> pd.Series:
-    sub = df.head(recent_periods)[["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]]
-    flat = sub.values.flatten()
-    return pd.Series(flat).value_counts().sort_values(ascending=False)
-
-
-def simulate_pair(pair: tuple[int, int], df: pd.DataFrame, simulations: int = 5000, lookahead: int = 3) -> float:
-    if len(df) <= lookahead + 1:
-        return 0.0
-
-    hit = 0
-    max_start = len(df) - lookahead - 1
-
-    # 這裡是「歷史抽樣」模擬，不使用未來資料
+def simulate_pair_hit(draws: list[set[int]], pair: tuple[int, int], simulations: int, sample_size: int) -> float:
+    hits = 0
     for _ in range(simulations):
-        start = random.randint(0, max_start)
-        future = df.iloc[start + 1 : start + 1 + lookahead]
-        future_numbers = set(future[["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]].values.flatten())
-        if (pair[0] in future_numbers) or (pair[1] in future_numbers):
-            hit += 1
+        sample_draws = random.sample(draws, sample_size)
+        if any(num in draw for draw in sample_draws for num in pair):
+            hits += 1
+    return hits / simulations
 
-    return hit / simulations
+def score_pair_with_rules(pair: tuple[int, int], base_prob: float) -> tuple[float, str]:
+    score = base_prob
+    reasons = []
 
+    # 奇偶加權
+    odds = [num % 2 for num in pair]
+    if sum(odds) == 1:
+        score += 0.02
+        reasons.append("奇偶平衡 +0.02")
+    else:
+        score -= 0.02
+        reasons.append("奇偶失衡 -0.02")
+
+    # 尾數加權
+    tails = [num % 10 for num in pair]
+    if tails[0] == tails[1]:
+        score -= 0.03
+        reasons.append("尾數相同 -0.03")
+    else:
+        score += 0.01
+        reasons.append("尾數不同 +0.01")
+
+    return score, "；".join(reasons)
+
+def run_strategy(df: pd.DataFrame,
+                 recent_n: int,
+                 top_n: int,
+                 exclude_recent: int,
+                 simulations: int,
+                 sample_size: int,
+                 seed: int) -> pd.DataFrame:
+    draws = df_to_draw_sets(df, recent_n=recent_n)
+    if len(draws) < max(sample_size, exclude_recent, 10):
+        raise ValueError(f"可用期數不足：目前只有 {len(draws)} 期，至少需要 >= {max(sample_size, exclude_recent, 10)} 期。")
+
+    top_hot = get_top_hot_numbers(draws, top_n=top_n, exclude_recent=exclude_recent)
+
+    # 固定種子，確保可重現
+    random.seed(seed)
+
+    results = []
+    for pair in combinations(top_hot, 2):
+        prob = simulate_pair_hit(draws, pair, simulations=simulations, sample_size=sample_size)
+        score, reason = score_pair_with_rules(pair, prob)
+        results.append((f"{pair[0]}-{pair[1]}", prob, score, reason))
+
+    out = pd.DataFrame(results, columns=["號碼配對", "原始命中率", "加權後分數", "加權原因"])
+    out = out.sort_values("加權後分數", ascending=False).reset_index(drop=True)
+    return out
 
 # ===============================
 # Streamlit UI
 # ===============================
-def main():
-    st.write("DEBUG secrets github:", st.secrets["github"])
 
-    st.title("今彩539 雙號策略推薦系統（GitHub 永久資料版）")
+st.set_page_config(page_title="加州天天樂 Fantasy 5｜自動抓取＋策略分析", layout="wide")
 
-    cfg = get_github_cfg()
+st.title("加州天天樂 (Fantasy 5)｜自動抓取最新號碼 + 你的策略分析")
+st.caption("資料來源預設使用可正常抓取的第三方結果頁（官方頁面常見 403）。請理性看待模擬結果。")
 
-    with st.status("同步資料中（GitHub ↔ 官網）...", expanded=False):
+with st.sidebar:
+    st.subheader("資料設定")
+    csv_path = st.text_input("本地/專案內 CSV 路徑", value=DEFAULT_CSV_PATH)
+
+    st.subheader("策略參數（可調）")
+    recent_n = st.number_input("取最近 N 期做統計", min_value=20, max_value=2000, value=63, step=1)
+    top_n = st.number_input("熱門號碼 top_n", min_value=5, max_value=39, value=13, step=1)
+    exclude_recent = st.number_input("排除最近幾期的過熱號（>=2 次）", min_value=1, max_value=20, value=3, step=1)
+    simulations = st.number_input("模擬次數", min_value=100, max_value=200000, value=5096, step=100)
+    sample_size = st.number_input("抽樣期數（預測窗口）", min_value=1, max_value=30, value=3, step=1)
+    seed = st.number_input("Random seed（固定可重現）", min_value=0, max_value=10_000, value=66, step=1)
+
+    st.divider()
+    do_update = st.button("🔄 抓取最新號碼並更新 CSV")
+    do_run = st.button("📈 執行策略分析")
+
+# Load local
+try:
+    local_df = load_local_csv(csv_path)
+except Exception as e:
+    st.error(f"讀取 CSV 失敗：{e}")
+    st.stop()
+
+colA, colB = st.columns([1, 1])
+
+with colA:
+    st.subheader("本地歷史資料（最近 20 期）")
+    st.dataframe(local_df.head(20), use_container_width=True)
+
+with colB:
+    st.subheader("網站最新資料（抓取預覽）")
+    try:
+        web_df = fetch_latest_from_web()
+        st.dataframe(web_df.head(20), use_container_width=True)
+        st.caption(f"來源：{SOURCE_SC888}")
+    except Exception as e:
+        web_df = None
+        st.warning(f"抓取網站資料失敗：{e}")
+
+# Update CSV if requested
+updated_df = local_df
+new_rows_df = pd.DataFrame()
+
+if do_update:
+    if web_df is None:
+        st.error("目前無法取得網站資料，請稍後再試或更換來源。")
+    else:
+        updated_df, new_rows_df = merge_and_update(local_df, web_df)
+
+        st.success(f"已合併完成：新增 {len(new_rows_df)} 期。")
+        if len(new_rows_df) > 0:
+            st.subheader("✅ 新增的期數")
+            st.dataframe(new_rows_df, use_container_width=True)
+
+        # Try to persist to disk (works locally; Streamlit Cloud is ephemeral but still okay per session)
         try:
-            df = update_github_csv(cfg)
-            st.success(f"資料已就緒，共 {len(df)} 期（來源：GitHub，必要時由官網補齊）")
+            updated_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+            st.info(f"已寫回 CSV：{csv_path}")
         except Exception as e:
-            st.error("同步失敗，將改用 GitHub 既有資料（不更新）")
-            st.exception(e)
-            df = read_df_from_github(cfg)
-            st.info(f"已載入 GitHub 既有資料，共 {len(df)} 期")
+            st.warning(f"寫回 CSV 失敗（但已在記憶體合併）：{e}")
 
-    if len(df) == 0:
-        st.warning("目前沒有可用資料。請先在 repo 放入 539_data.csv（至少 1 筆）。")
-        return
+        st.download_button(
+            "⬇️ 下載更新後 CSV",
+            data=updated_df.to_csv(index=False, encoding="utf-8-sig"),
+            file_name="Fan_number_updated.csv",
+            mime="text/csv"
+        )
 
-    # 顯示最後更新日期
-    st.caption(f"最新一期日期：{df['日期'].max().strftime('%Y-%m-%d')}")
+# Run strategy if requested
+if do_run:
+    # If user updated just now, use updated_df; else use local
+    base_df = updated_df
 
-    # 取最近 100 期策略用
-    recent = df.head(100).copy()
+    st.subheader("策略分析結果")
+    try:
+        result_df = run_strategy(
+            base_df,
+            recent_n=int(recent_n),
+            top_n=int(top_n),
+            exclude_recent=int(exclude_recent),
+            simulations=int(simulations),
+            sample_size=int(sample_size),
+            seed=int(seed),
+        )
 
-    # 近 3 期出現 >=2 的過熱號
-    last3 = recent.head(3)[["NO.1", "NO.2", "NO.3", "NO.4", "NO.5"]].values.flatten()
-    overhot = pd.Series(last3).value_counts()
-    overhot_numbers = overhot[overhot >= 2].index.tolist()
+        st.write("🎯 前 3 名建議（加權後分數最高）")
+        st.dataframe(result_df.head(3), use_container_width=True)
 
-    hot_numbers = get_hot_numbers(recent, recent_periods=20)
-    hot_filtered = [int(n) for n in hot_numbers.index.tolist() if int(n) not in overhot_numbers]
+        st.write("完整排名（可排序）")
+        st.dataframe(result_df, use_container_width=True)
 
-    # 產生 pair
-    pairs = []
-    for i in range(len(hot_filtered)):
-        for j in range(i + 1, len(hot_filtered)):
-            pairs.append((hot_filtered[i], hot_filtered[j]))
-
-    st.write(f"候選雙號組合：{len(pairs)} 組")
-    st.write(f"排除過熱號（近3期出現>=2）：{sorted(overhot_numbers)}")
-
-    # 控制模擬量（Cloud 成本考量：提供 UI）
-    simulations = st.slider("每組模擬次數", min_value=500, max_value=20000, value=5000, step=500)
-    lookahead = st.selectbox("命中窗口（期數）", [3, 4, 5], index=0)
-
-    if st.button("開始計算 Top 3", type="primary"):
-        with st.spinner("模擬計算中..."):
-            results = []
-            for p in pairs:
-                score = simulate_pair(p, df, simulations=simulations, lookahead=lookahead)
-
-                # 權重：奇偶平衡 / 尾數分散
-                odds_even_weight = 1.2 if (p[0] % 2) != (p[1] % 2) else 1.0
-                tail_weight = 1.2 if (p[0] % 10) != (p[1] % 10) else 1.0
-                total_score = score * odds_even_weight * tail_weight
-
-                results.append(
-                    {
-                        "號碼組合": f"{p[0]:02d}-{p[1]:02d}",
-                        "原始命中率": score,
-                        "奇偶權重": odds_even_weight,
-                        "尾數權重": tail_weight,
-                        "加權分數": total_score,
-                    }
-                )
-
-            result_df = pd.DataFrame(results).sort_values(by="加權分數", ascending=False).head(3)
-
-        st.subheader("前 3 名雙號推薦")
-        show = result_df.copy()
-        show["原始命中率"] = show["原始命中率"].map(lambda x: f"{x:.2%}")
-        show["加權分數"] = show["加權分數"].map(lambda x: f"{x:.4f}")
-        st.table(show)
-
-    with st.expander("查看最近 20 期資料"):
-        st.dataframe(df.head(20))
-
-
-if __name__ == "__main__":
-    main()
+        st.download_button(
+            "⬇️ 下載結果 CSV（排名）",
+            data=result_df.to_csv(index=False, encoding="utf-8-sig"),
+            file_name="fantasy5_pair_ranking.csv",
+            mime="text/csv"
+        )
+    except Exception as e:
+        st.error(f"策略執行失敗：{e}")
 
